@@ -1,10 +1,15 @@
+/**
+ * SmartNewsReader
+ * A generic, AI-powered reader framework for structured news views.
+ */
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname;
     const apiKey = await env.GEMINI_API_KEY.get();
     
-    // 1. Image Proxy (1 Year Cache on 200 OK)
+    // 1. Image Proxy (/image/{domain}/{path})
     if (path.startsWith('/image/')) {
       return await this.handleImageProxy(path, request);
     }
@@ -12,7 +17,7 @@ export default {
     const cache = caches.default;
     const cacheKey = new Request(url.origin + path, { method: "GET" });
     
-    // Skip cache check for the portal to allow instant UI updates
+    // Bypass cache for Portal to allow instant code/list updates
     if (path !== "/" && path !== "") {
       let cachedResponse = await cache.match(cacheKey);
       if (cachedResponse) return cachedResponse;
@@ -20,7 +25,7 @@ export default {
 
     try {
       if (path === "/" || path === "") {
-        return this.renderPortal(); // No cache
+        return this.renderPortal();
       } 
       else if (path.startsWith('/visit/')) {
         return await this.handleNewsFeed(path, request, apiKey, cache, cacheKey, ctx);
@@ -34,16 +39,18 @@ export default {
     }
   },
 
+  // --- IMAGE PROXY: Selective caching & Stealth ---
   async handleImageProxy(path, request) {
     const targetUrlRaw = path.replace('/image/', '');
     const targetUrl = "https://" + targetUrlRaw;
     const domain = targetUrlRaw.split('/')[0];
+
     const headers = this.getStealthHeaders(request, domain);
-    
     const imgRes = await fetch(targetUrl, { headers });
-    const newHeaders = new Headers(imgRes.headers);
     
+    const newHeaders = new Headers(imgRes.headers);
     if (imgRes.status === 200) {
+      // 1 Year Cache for successful images
       newHeaders.set("Cache-Control", "public, max-age=31536000, immutable");
     } else {
       newHeaders.set("Cache-Control", "no-store");
@@ -53,6 +60,7 @@ export default {
     return new Response(imgRes.body, { status: imgRes.status, headers: newHeaders });
   },
 
+  // --- NEWS FEED: /visit/{domain}/{path} (10min cache) ---
   async handleNewsFeed(path, request, apiKey, cache, cacheKey, ctx) {
     const fullTarget = path.replace('/visit/', '');
     const targetDomain = fullTarget.split('/')[0];
@@ -101,22 +109,27 @@ export default {
 
     await rewriter.transform(rfiRes).arrayBuffer();
 
+    const promptData = output.join("\n").substring(0, 65000);
     const prompt = `Task: Convert news list to JSON. 
     Schema: {"nav": [{"label": "str", "url": "ID"}], "news": [{"title": "str", "link": "ID", "image": "ID"}]}
-    Data: ${output.join("\n").substring(0, 65000)}`;
+    Data: ${promptData}`;
 
-    const aiRes = await this.callAI(prompt, apiKey);
-    const data = JSON.parse(this.cleanJson(aiRes));
-
-    const html = this.renderHome(this.mapBack(data, urlMap));
-    // 10 MINUTE CACHE for News Feed
-    const res = new Response(html, { 
-      headers: { "Content-Type": "text/html; charset=UTF-8", "Cache-Control": "s-maxage=600, public" } 
-    });
-    ctx.waitUntil(cache.put(cacheKey, res.clone()));
-    return res;
+    let aiResText = "";
+    try {
+      aiResText = await this.callAI(prompt, apiKey);
+      const data = JSON.parse(this.cleanJson(aiResText));
+      const html = this.renderHome(this.mapBack(data, urlMap));
+      const res = new Response(html, { 
+        headers: { "Content-Type": "text/html; charset=UTF-8", "Cache-Control": "s-maxage=600, public" } 
+      });
+      ctx.waitUntil(cache.put(cacheKey, res.clone()));
+      return res;
+    } catch (err) {
+      return this.renderDebugPage("News Feed AI Failure", err, prompt, aiResText);
+    }
   },
 
+  // --- ARTICLE READER: /article/{domain}/{path} (60min cache) ---
   async handleArticle(path, request, apiKey, cache, cacheKey, ctx) {
     const fullPath = path.replace('/article/', '');
     const targetDomain = fullPath.split('/')[0];
@@ -147,22 +160,27 @@ export default {
 
     await rewriter.transform(res).arrayBuffer();
 
-    const prompt = `Extract article to JSON. 
+    const promptData = output.join("\n").substring(0, 45000);
+    const prompt = `Task: Extract article content to JSON. 
     Schema: {"image_url": "ID", "title": "str", "summary_points": ["str"], "paragraphs": ["str"], "metadata": {"reading_time_mins": 5, "sentiment": "Neutral"}}
-    Data: ${output.join("\n").substring(0, 45000)}`;
+    Data: ${promptData}`;
 
-    const aiRes = await this.callAI(prompt, apiKey);
-    const data = JSON.parse(this.cleanJson(aiRes));
-
-    const html = this.renderArticle(this.mapBack(data, urlMap));
-    // 60 MINUTE CACHE for Articles
-    const finalRes = new Response(html, { 
-      headers: { "Content-Type": "text/html; charset=UTF-8", "Cache-Control": "s-maxage=3600, public" } 
-    });
-    ctx.waitUntil(cache.put(cacheKey, finalRes.clone()));
-    return finalRes;
+    let aiResText = "";
+    try {
+      aiResText = await this.callAI(prompt, apiKey);
+      const data = JSON.parse(this.cleanJson(aiResText));
+      const html = this.renderArticle(this.mapBack(data, urlMap));
+      const finalRes = new Response(html, { 
+        headers: { "Content-Type": "text/html; charset=UTF-8", "Cache-Control": "s-maxage=3600, public" } 
+      });
+      ctx.waitUntil(cache.put(cacheKey, finalRes.clone()));
+      return finalRes;
+    } catch (err) {
+      return this.renderDebugPage("Article Reader AI Failure", err, prompt, aiResText);
+    }
   },
 
+  // --- SHARED UTILS ---
   async callAI(prompt, key) {
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent?key=${key}`, {
       method: "POST",
@@ -179,7 +197,7 @@ export default {
       })
     });
     const json = await res.json();
-    if (!json.candidates?.[0]) throw new Error("AI_REJECTION");
+    if (!json.candidates?.[0]) throw new Error("AI_REJECTION: No candidates returned.");
     return json.candidates[0].content.parts[0].text;
   },
 
@@ -206,6 +224,7 @@ export default {
     return h;
   },
 
+  // --- RENDERERS ---
   renderPortal() {
     const sites = [
       { name: "RFI 华语", url: "/visit/www.rfi.fr/cn/" },
@@ -213,7 +232,7 @@ export default {
     ];
     return new Response(`<!DOCTYPE html><html><head><script src="https://cdn.tailwindcss.com"></script></head>
     <body class="bg-slate-50 min-h-screen flex flex-col justify-center p-6 italic">
-      <h1 class="text-4xl font-black mb-8 text-center text-slate-800 tracking-tighter uppercase">AI Reader Hub</h1>
+      <h1 class="text-4xl font-black mb-8 text-center text-slate-800 tracking-tighter uppercase">SmartReader</h1>
       <div class="max-w-xs mx-auto w-full space-y-4">
         ${sites.map(s => `<a href="${s.url}" class="block p-6 bg-white border-2 border-slate-900 rounded-3xl font-bold text-center shadow-[4px_4px_0px_0px_rgba(15,23,42,1)] active:translate-y-1 active:shadow-none transition-all">${s.name}</a>`).join('')}
       </div>
@@ -227,7 +246,7 @@ export default {
       ${(data.nav || []).map(n => `<a href="${n.url}" class="text-[10px] font-bold px-3 py-1 bg-white border border-slate-200 rounded-full whitespace-nowrap">${n.label}</a>`).join('')}
     </nav><main class="max-w-md mx-auto divide-y divide-slate-100">
       ${(data.news || []).map(i => `<a href="${i.link}" class="flex gap-4 p-4 bg-white active:bg-slate-50 transition-all">
-        <div class="w-[40%] shrink-0 aspect-[4/3] rounded-xl overflow-hidden bg-slate-100"><img src="${i.image}" class="w-full h-full object-cover"></div>
+        <div class="w-[40%] shrink-0 aspect-[4/3] rounded-xl overflow-hidden bg-slate-100"><img src="${i.image}" class="w-full h-full object-cover" loading="lazy"></div>
         <h2 class="text-sm font-bold line-clamp-2 pt-1 text-slate-800">${i.title}</h2></a>`).join('')}
     </main></body></html>`;
   },
@@ -253,5 +272,23 @@ export default {
       </div>
       <footer class="p-10 text-center border-t mt-10"><a href="javascript:history.back()" class="text-red-600 font-bold px-8 py-3 border border-red-600 rounded-full active:bg-red-600 active:text-white transition-all">← BACK</a></footer>
     </div></body></html>`;
+  },
+
+  renderDebugPage(title, error, prompt, aiResponse) {
+    return new Response(`<!DOCTYPE html><html><head><script src="https://cdn.tailwindcss.com"></script></head>
+    <body class="bg-slate-900 text-slate-300 p-6 font-mono text-[10px]">
+      <div class="max-w-4xl mx-auto">
+        <h1 class="text-red-500 text-lg font-bold mb-4">🚨 ${title}</h1>
+        <div class="bg-red-950/30 border border-red-500/50 p-4 rounded mb-6">
+          <p class="text-white font-bold mb-1">Error Message:</p>
+          <p class="break-words">${error.message}</p>
+        </div>
+        <h2 class="text-blue-400 font-bold mb-2 uppercase">Raw AI Response:</h2>
+        <pre class="bg-black p-4 rounded overflow-x-auto border border-slate-700 mb-6 text-green-400 whitespace-pre-wrap">${aiResponse || 'No response received'}</pre>
+        <h2 class="text-blue-400 font-bold mb-2 uppercase">Prompt Data:</h2>
+        <pre class="bg-black p-4 rounded overflow-x-auto border border-slate-700 h-96 overflow-y-scroll text-slate-500 whitespace-pre-wrap">${prompt}</pre>
+        <footer class="mt-8 text-center"><a href="/" class="bg-slate-700 px-6 py-2 rounded-full text-white">Return to Portal</a></footer>
+      </div>
+    </body></html>`, { headers: { "Content-Type": "text/html" } });
   }
 };
