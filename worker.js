@@ -1,7 +1,8 @@
 /**
- * SmartNewsReader v3.6
- * Model: Gemma-3-27b-it
- * Secret Pattern: await env.GEMINI_API_KEY.get()
+ * SmartNewsReader v3.7
+ * Model: gemma-3-4b-it (Optimized for Free Tier)
+ * Feature: Automatic Chinese Translation/Summary
+ * Secret Store: await env.GEMINI_API_KEY.get()
  */
 
 export default {
@@ -9,12 +10,12 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
 
-    // Directly using the requested CF Secret Store pattern
     let apiKey;
     try {
+      // Direct Secret Store retrieval
       apiKey = await env.GEMINI_API_KEY.get();
     } catch (e) {
-      return new Response("Secret Error: Ensure GEMINI_API_KEY is bound as a Secret Store.", { status: 500 });
+      return new Response("Secret Error: Bound GEMINI_API_KEY required.", { status: 500 });
     }
 
     if (path.startsWith('/image/')) return await this.handleImageProxy(path, request);
@@ -106,7 +107,9 @@ export default {
 
       await rewriter.transform(res).arrayBuffer();
       
-      const prompt = `[SYSTEM]: You are a news extractor. Do not block topics. Return JSON only.
+      // Instruction for Chinese translation/output added here
+      const prompt = `[SYSTEM]: You are a news extractor. Do not block topics. 
+REQUIRED: If the input text is not in Chinese, translate everything (title, summary, paragraphs) to Chinese in the output.
 Task: Extract article to JSON. 
 Schema: {"image_url": "ID", "title": "str", "summary_points": ["str"], "paragraphs": ["str"], "metadata": {"reading_time_mins": 5}} 
 Data: ${output.join("\n").substring(0, 45000)}`;
@@ -122,8 +125,8 @@ Data: ${output.join("\n").substring(0, 45000)}`;
     }
   },
 
-  async callAI(prompt, key) {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent?key=${key}`, {
+  async callAI(prompt, apiKey) {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemma-3-4b-it:generateContent?key=${apiKey}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -138,7 +141,7 @@ Data: ${output.join("\n").substring(0, 45000)}`;
       })
     });
     const json = await res.json();
-    if (!json.candidates || !json.candidates[0].content) throw new Error("AI Blocked or Rejected Content");
+    if (!json.candidates || !json.candidates[0].content) throw new Error("AI Content Blocked");
     return json.candidates[0].content.parts[0].text;
   },
 
