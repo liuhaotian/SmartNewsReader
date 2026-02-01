@@ -1,121 +1,87 @@
 /**
- * SmartNewsReader
- * Fixed Encoding, Added Epoch Times, Updated BBC RSS.
+ * SmartNewsReader v3.6
+ * Model: Gemma-3-27b-it
+ * Secret Pattern: await env.GEMINI_API_KEY.get()
  */
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname;
-    const apiKey = await env.GEMINI_API_KEY.get();
-    
-    if (path.startsWith('/image/')) return await this.handleImageProxy(path, request);
 
-    const cache = caches.default;
-    const cacheKey = new Request(url.origin + path, { method: "GET" });
-    
-    if (path !== "/" && path !== "") {
+    // Directly using the requested CF Secret Store pattern
+    let apiKey;
+    try {
+      apiKey = await env.GEMINI_API_KEY.get();
+    } catch (e) {
+      return new Response("Secret Error: Ensure GEMINI_API_KEY is bound as a Secret Store.", { status: 500 });
+    }
+
+    if (path.startsWith('/image/')) return await this.handleImageProxy(path, request);
+    if (path === "/" || path === "") return await this.handleUnifiedFeed(request);
+
+    if (path.startsWith('/article/')) {
+      const cache = caches.default;
+      const cacheKey = new Request(url.origin + path, { method: "GET" });
       let cachedResponse = await cache.match(cacheKey);
       if (cachedResponse) return cachedResponse;
+
+      const response = await this.handleArticle(path, request, apiKey, cache, cacheKey, ctx);
+      return response;
     }
 
-    try {
-      if (path === "/" || path === "") return this.renderPortal();
-      else if (path.startsWith('/visit/')) return await this.handleNewsFeed(path, request, apiKey, cache, cacheKey, ctx);
-      else if (path.startsWith('/article/')) return await this.handleArticle(path, request, apiKey, cache, cacheKey, ctx);
-      return new Response("Not Found", { status: 404 });
-    } catch (err) {
-      return new Response(`System Error: ${err.message}`, { 
-        status: 500, 
-        headers: { "Content-Type": "text/plain; charset=UTF-8" } 
-      });
-    }
+    return new Response("Not Found", { status: 404 });
   },
 
-  async handleImageProxy(path, request) {
-    const targetUrlRaw = path.replace('/image/', '');
-    const targetUrl = "https://" + targetUrlRaw;
-    const domain = targetUrlRaw.split('/')[0];
-    const headers = this.getStealthHeaders(request, domain);
-    
-    const imgRes = await fetch(targetUrl, { headers });
-    const newHeaders = new Headers(imgRes.headers);
-    if (imgRes.status === 200) {
-      newHeaders.set("Cache-Control", "public, max-age=31536000, immutable");
-    } else {
-      newHeaders.set("Cache-Control", "no-store");
-    }
-    newHeaders.delete("Set-Cookie");
-    return new Response(imgRes.body, { status: imgRes.status, headers: newHeaders });
+  async handleUnifiedFeed(request) {
+    const sources = [
+      { name: "RFI", url: "https://www.rfi.fr/cn/rss", color: "text-red-600", domain: "www.rfi.fr" },
+      { name: "BBC", url: "https://feeds.bbci.co.uk/zhongwen/trad/rss.xml", color: "text-orange-700", domain: "feeds.bbci.co.uk" },
+      { name: "大纪元", url: "https://feed.epochtimes.com/feed", color: "text-blue-600", domain: "feed.epochtimes.com" },
+      { name: "VOA", url: "https://www.voachinese.com/api/zm_yql-vomx-tpeybti", color: "text-sky-800", domain: "www.voachinese.com" }
+    ];
+
+    const feedResults = await Promise.all(
+      sources.map(async (src) => {
+        try {
+          const res = await fetch(src.url, { 
+            headers: this.getStealthHeaders(request, src.domain),
+            cf: { cacheTtl: 600 } 
+          });
+          const xml = await res.text();
+          return this.parseRSS(xml, src);
+        } catch (e) { return []; }
+      })
+    );
+
+    const allNews = feedResults.flat().sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+    return new Response(this.renderHome(allNews), { 
+      headers: { "Content-Type": "text/html; charset=UTF-8", "Cache-Control": "no-cache" } 
+    });
   },
 
-  async handleNewsFeed(path, request, apiKey, cache, cacheKey, ctx) {
-    const fullTarget = path.replace('/visit/', '');
-    const targetDomain = fullTarget.split('/')[0];
-    const targetUrl = `https://${fullTarget}`;
-    
-    const res = await fetch(targetUrl, { headers: this.getStealthHeaders(request, targetDomain) });
-    const contentType = res.headers.get("Content-Type") || "";
-
-    // A. DIRECT RSS PARSING
-    if (contentType.includes("xml") || targetUrl.includes("rss") || targetUrl.includes("feed")) {
-      const xml = await res.text();
-      const items = xml.match(/<item>[\s\S]*?<\/item>/g) || [];
+  parseRSS(xml, source) {
+    const items = xml.match(/<item>[\s\S]*?<\/item>/g) || [];
+    return items.map(item => {
+      const title = (item.match(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>/) || item.match(/<title>([\s\S]*?)<\/title>/))?.[1] || "No Title";
+      const link = (item.match(/<link>([\s\S]*?)<\/link>/))?.[1] || "";
+      const pubDate = (item.match(/<pubDate>([\s\S]*?)<\/pubDate>/))?.[1] || "";
+      const mediaMatch = item.match(/<media:thumbnail[^>]*url="([\s\S]*?)"/) || 
+                         item.match(/<media:content[^>]*url="([\s\S]*?)"/) || 
+                         item.match(/<enclosure[^>]*url="([\s\S]*?)"/) || 
+                         item.match(/<img[^>]*src="([\s\S]*?)"/);
       
-      const news = items.map(item => {
-        const titleMatch = item.match(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>/) || item.match(/<title>([\s\S]*?)<\/title>/);
-        const title = titleMatch ? titleMatch[1] : "";
-        
-        const linkMatch = item.match(/<link>([\s\S]*?)<\/link>/);
-        const link = linkMatch ? linkMatch[1] : "";
-        
-        const mediaMatch = item.match(/<media:content[^>]*url="([\s\S]*?)"/) || item.match(/<enclosure[^>]*url="([\s\S]*?)"/) || item.match(/<img[^>]*src="([\s\S]*?)"/);
-        const media = mediaMatch ? mediaMatch[1] : "";
-        
-        const articlePath = link ? `/article/${new URL(link).hostname}${new URL(link).pathname}${new URL(link).search}` : "#";
-        const imageProxy = media ? `/image/${new URL(media).href.replace('https://', '')}` : "";
-
-        return { title, link: articlePath, image: imageProxy };
-      });
-
-      const html = this.renderHome({ news });
-      return new Response(html, { headers: { "Content-Type": "text/html; charset=UTF-8", "Cache-Control": "s-maxage=600, public" } });
-    }
-
-    // B. HTML FALLBACK
-    const urlMap = new Map();
-    let linkCounter = 1, imgCounter = 1, output = [];
-    const rewriter = new HTMLRewriter()
-      .on("a[href]", { element(el) {
-          const href = el.getAttribute("href");
-          if (href && href.length > 1) {
-            const id = `L${linkCounter++}`;
-            urlMap.set(id, `/article/${new URL(href, targetUrl).hostname}${new URL(href, targetUrl).pathname}`);
-            output.push(`[LINK]: ${id}`);
-          }
-      }})
-      .on("img", { element(el) {
-          const src = el.getAttribute("src");
-          if (src) {
-            const id = `I${imgCounter++}`;
-            urlMap.set(id, `/image/${new URL(src, targetUrl).href.replace('https://', '')}`);
-            output.push(`[IMG]: ${id}`);
-          }
-      }})
-      .on("h1, h2, h3, p", { text(t) { if (t.text.trim().length > 8) output.push(`[TEXT]: ${t.text.trim()}`); } });
-
-    await rewriter.transform(res).arrayBuffer();
-    const prompt = `Task: News JSON. Schema: {"news": [{"title": "str", "link": "ID", "image": "ID"}]} Data: ${output.join("\n").substring(0, 60000)}`;
-    
-    let aiRes = "";
-    try {
-      aiRes = await this.callAI(prompt, apiKey);
-      const data = JSON.parse(this.cleanJson(aiRes));
-      const html = this.renderHome(this.mapBack(data, urlMap));
-      return new Response(html, { headers: { "Content-Type": "text/html; charset=UTF-8", "Cache-Control": "s-maxage=600, public" } });
-    } catch (err) {
-      return this.renderDebugPage("HTML Feed AI Failure", err, prompt, aiRes);
-    }
+      const media = mediaMatch ? mediaMatch[1] : "";
+      const timestamp = pubDate ? new Date(pubDate).getTime() : 0;
+      let articlePath = "#";
+      if (link) {
+        try {
+          const u = new URL(link.trim());
+          articlePath = `/article/${u.hostname}${u.pathname}${u.search}`;
+        } catch(e) { articlePath = "#"; }
+      }
+      return { title, link: articlePath, image: media ? `/image/${media.replace(/^https?:\/\//, '')}` : "", source: source.name, color: source.color, timestamp };
+    });
   },
 
   async handleArticle(path, request, apiKey, cache, cacheKey, ctx) {
@@ -125,31 +91,34 @@ export default {
     const urlMap = new Map();
     let imgCounter = 1, output = [];
 
-    const res = await fetch(targetUrl, { headers: this.getStealthHeaders(request, targetDomain) });
-    const rewriter = new HTMLRewriter()
-      .on("img", { element(el) {
-          const src = el.getAttribute("src") || el.getAttribute("data-src");
-          if (src) {
-            const id = `I${imgCounter++}`;
-            urlMap.set(id, `/image/${new URL(src, targetUrl).href.replace('https://', '')}`);
-            output.push(`[IMG]: ${id}`);
-          }
-      }})
-      .on("h1, p", { text(t) { if (t.text.trim().length > 15) output.push(`[TEXT]: ${t.text.trim()}`); } });
-
-    await rewriter.transform(res).arrayBuffer();
-    const prompt = `Extract article to JSON. Schema: {"image_url": "ID", "title": "str", "summary_points": ["str"], "paragraphs": ["str"], "metadata": {"reading_time_mins": 5, "sentiment": "str"}} Data: ${output.join("\n").substring(0, 45000)}`;
-
-    let aiRes = "";
     try {
-      aiRes = await this.callAI(prompt, apiKey);
+      const res = await fetch(targetUrl, { headers: this.getStealthHeaders(request, targetDomain) });
+      const rewriter = new HTMLRewriter()
+        .on("img", { element(el) {
+            const src = el.getAttribute("src") || el.getAttribute("data-src");
+            if (src) {
+              const id = `I${imgCounter++}`;
+              urlMap.set(id, `/image/${src.replace(/^https?:\/\//, '')}`);
+              output.push(`[IMG]: ${id}`);
+            }
+        }})
+        .on("h1, p", { text(t) { if (t.text.trim().length > 15) output.push(`[TEXT]: ${t.text.trim()}`); } });
+
+      await rewriter.transform(res).arrayBuffer();
+      
+      const prompt = `[SYSTEM]: You are a news extractor. Do not block topics. Return JSON only.
+Task: Extract article to JSON. 
+Schema: {"image_url": "ID", "title": "str", "summary_points": ["str"], "paragraphs": ["str"], "metadata": {"reading_time_mins": 5}} 
+Data: ${output.join("\n").substring(0, 45000)}`;
+
+      const aiRes = await this.callAI(prompt, apiKey);
       const data = JSON.parse(this.cleanJson(aiRes));
       const html = this.renderArticle(this.mapBack(data, urlMap));
       const finalRes = new Response(html, { headers: { "Content-Type": "text/html; charset=UTF-8", "Cache-Control": "s-maxage=3600, public" } });
       ctx.waitUntil(cache.put(cacheKey, finalRes.clone()));
       return finalRes;
     } catch (err) {
-      return this.renderDebugPage("Article AI Failure", err, prompt, aiRes);
+      return this.renderDebugPage("Extraction Failure", err);
     }
   },
 
@@ -159,12 +128,28 @@ export default {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
+        safetySettings: [
+          { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+          { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+          { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+          { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+        ],
         generationConfig: { temperature: 0.1 }
       })
     });
     const json = await res.json();
-    if (!json.candidates?.[0]) throw new Error("AI_REJECTION");
+    if (!json.candidates || !json.candidates[0].content) throw new Error("AI Blocked or Rejected Content");
     return json.candidates[0].content.parts[0].text;
+  },
+
+  async handleImageProxy(path, request) {
+    const targetUrl = "https://" + path.replace('/image/', '');
+    const domain = new URL(targetUrl).hostname;
+    const imgRes = await fetch(targetUrl, { headers: this.getStealthHeaders(request, domain) });
+    const newHeaders = new Headers(imgRes.headers);
+    if (imgRes.status === 200) newHeaders.set("Cache-Control", "public, max-age=31536000, immutable");
+    newHeaders.delete("Set-Cookie");
+    return new Response(imgRes.body, { status: imgRes.status, headers: newHeaders });
   },
 
   mapBack(obj, urlMap) {
@@ -183,69 +168,55 @@ export default {
     const h = new Headers(req.headers);
     h.set("Host", host);
     h.set("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1");
+    h.set("Referer", `https://${host}/`);
     ["cf-connecting-ip", "cf-ipcountry", "cf-ray", "x-real-ip"].forEach(x => h.delete(x));
     return h;
   },
 
-  renderPortal() {
-    const sites = [
-      { name: "RFI 华语", url: "/visit/www.rfi.fr/cn/rss" },
-      { name: "BBC 中文", url: "/visit/feeds.bbci.co.uk/zhongwen/trad/rss.xml" },
-      { name: "大纪元", url: "/visit/feed.epochtimes.com/feed" }
-    ];
-    const html = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><script src="https://cdn.tailwindcss.com"></script></head>
-    <body class="bg-slate-50 min-h-screen flex flex-col justify-center p-6 italic font-serif">
-      <h1 class="text-5xl font-black mb-12 text-center text-slate-900 tracking-tighter uppercase">SmartReader</h1>
-      <div class="max-w-xs mx-auto w-full space-y-6">
-        ${sites.map(s => `<a href="${s.url}" class="block p-8 bg-white border-4 border-slate-900 rounded-2xl font-black text-center shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] hover:translate-y-1 hover:shadow-none transition-all">${s.name}</a>`).join('')}
-      </div>
-    </body></html>`;
-    return new Response(html, { headers: { "Content-Type": "text/html; charset=UTF-8", "Cache-Control": "no-store" } });
+  timeAgo(ts) {
+    const diff = Math.floor((Date.now() - ts) / 1000);
+    if (diff < 60) return '刚刚';
+    if (diff < 3600) return `${Math.floor(diff / 60)}m前`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h前`;
+    return `${Math.floor(diff / 86400)}d前`;
   },
 
-  renderHome(data) {
-    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><script src="https://cdn.tailwindcss.com"></script></head>
-    <body class="bg-gray-50"><nav class="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b flex gap-2 p-3">
-      <a href="/" class="text-[10px] font-black px-4 py-1.5 bg-black text-white rounded-full uppercase">Home</a>
-    </nav><main class="max-w-md mx-auto divide-y divide-slate-200">
-      ${(data.news || []).map(i => `<a href="${i.link}" class="flex gap-4 p-5 bg-white active:bg-slate-50">
-        <div class="w-32 h-24 shrink-0 rounded-lg overflow-hidden bg-slate-100">${i.image ? `<img src="${i.image}" class="w-full h-full object-cover">` : ''}</div>
-        <h2 class="text-sm font-bold leading-snug text-slate-800">${i.title}</h2></a>`).join('')}
-    </main></body></html>`;
+  renderHome(news) {
+    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><script src="https://cdn.tailwindcss.com"></script></head>
+    <body class="bg-slate-50 min-h-screen">
+      <header class="sticky top-0 z-50 bg-white/95 backdrop-blur-md border-b p-4 flex justify-between items-center shadow-sm">
+        <h1 class="font-black tracking-tighter uppercase text-xl text-slate-900">SmartNews</h1>
+        <div class="flex items-center gap-2 font-mono"><span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span><span class="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Live Feed</span></div>
+      </header>
+      <main class="max-w-md mx-auto divide-y divide-slate-100 bg-white">
+        ${news.map(i => `<a href="${i.link}" class="flex gap-4 p-5 hover:bg-slate-50 active:bg-slate-100 transition-colors">
+          <div class="w-28 h-20 shrink-0 rounded-lg overflow-hidden bg-slate-100 border border-slate-50">${i.image ? `<img src="${i.image}" class="w-full h-full object-cover" loading="lazy">` : ''}</div>
+          <div class="flex flex-col justify-between py-0.5"><h2 class="text-sm font-bold leading-snug text-slate-800 line-clamp-2">${i.title}</h2>
+          <div class="flex items-center gap-2 mt-2"><span class="text-[9px] font-black uppercase px-2 py-0.5 border border-current rounded ${i.color}">${i.source}</span>
+          <span class="text-[9px] text-slate-400 font-medium">${this.timeAgo(i.timestamp)}</span></div></div></a>`).join('')}
+      </main></body></html>`;
   },
 
   renderArticle(data) {
-    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><script src="https://cdn.tailwindcss.com"></script></head>
+    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><script src="https://cdn.tailwindcss.com"></script></head>
     <body class="bg-white"><div class="max-w-xl mx-auto">
       ${data.image_url ? `<img src="${data.image_url}" class="w-full aspect-video object-cover">` : ''}
-      <div class="p-6">
-        <h1 class="text-3xl font-black mb-6 leading-tight tracking-tight text-slate-900">${data.title}</h1>
+      <div class="p-6"><h1 class="text-3xl font-black mb-6 leading-tight text-slate-900">${data.title}</h1>
         <div class="bg-red-50 border-l-4 border-red-600 p-6 mb-8 rounded-r-2xl">
-          <ul class="space-y-2 text-sm font-medium text-red-900 list-disc list-inside">
-            ${(data.summary_points || []).map(p => `<li>${p}</li>`).join('')}
-          </ul>
+          <ul class="space-y-2 text-sm font-medium text-red-900 list-disc list-inside">${(data.summary_points || []).map(p => `<li>${p}</li>`).join('')}</ul>
         </div>
-        <div class="space-y-6 text-slate-800 leading-relaxed text-lg">
-          ${(data.paragraphs || []).map(p => `<p>${p}</p>`).join('')}
-        </div>
+        <div class="space-y-6 text-slate-800 leading-relaxed text-lg font-serif">${(data.paragraphs || []).map(p => `<p>${p}</p>`).join('')}</div>
       </div>
-      <footer class="p-12 text-center border-t mt-12"><a href="javascript:history.back()" class="bg-black text-white font-black px-10 py-4 rounded-full uppercase tracking-widest text-xs">← Back</a></footer>
+      <footer class="p-12 text-center border-t mt-12 bg-slate-50 font-sans"><a href="/" class="bg-black text-white font-black px-10 py-4 rounded-full uppercase text-xs tracking-widest hover:bg-slate-800 transition-all shadow-lg">← Back to Feed</a></footer>
     </div></body></html>`;
   },
 
-  renderDebugPage(title, error, prompt, aiResponse) {
-    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><script src="https://cdn.tailwindcss.com"></script></head>
-    <body class="bg-slate-950 text-slate-400 p-6 font-mono text-[10px]">
-      <div class="max-w-4xl mx-auto">
-        <h1 class="text-red-500 text-xl font-bold mb-6 italic tracking-tighter uppercase">Error // ${title}</h1>
-        <div class="border border-red-900 bg-red-950/20 p-4 mb-6 rounded text-red-400 break-all">${error.message}</div>
-        <p class="mb-2 text-blue-400 font-bold uppercase tracking-widest text-[8px]">AI Response:</p>
-        <pre class="bg-black p-4 rounded mb-6 border border-slate-800 text-green-500 whitespace-pre-wrap">${aiResponse || 'No Response'}</pre>
-        <p class="mb-2 text-blue-400 font-bold uppercase tracking-widest text-[8px]">Prompt Data:</p>
-        <pre class="bg-black p-4 rounded h-64 overflow-y-scroll border border-slate-800 text-slate-600 whitespace-pre-wrap">${prompt}</pre>
-        <div class="mt-8"><a href="/" class="bg-slate-800 text-white px-8 py-3 rounded-full font-bold">Portal Return</a></div>
-      </div>
-    </body></html>`;
-    return new Response(html, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
+  renderDebugPage(title, error) {
+    return new Response(`<!DOCTYPE html><html><head><meta charset="UTF-8"><script src="https://cdn.tailwindcss.com"></script></head>
+    <body class="bg-slate-950 text-slate-400 p-6 font-mono text-[10px]"><div class="max-w-4xl mx-auto">
+      <h1 class="text-red-500 text-xl font-bold mb-4 uppercase italic">Error // ${title}</h1>
+      <div class="border border-red-900 bg-red-950/20 p-4 mb-6 rounded text-red-400 break-all">${error.message}</div>
+      <a href="/" class="bg-slate-800 text-white px-8 py-3 rounded-full font-bold inline-block">Portal Return</a>
+    </div></body></html>`, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
   }
 };
