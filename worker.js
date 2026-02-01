@@ -1,8 +1,8 @@
 /**
- * SmartNewsReader v3.7
- * Model: gemma-3-4b-it (Optimized for Free Tier)
- * Feature: Automatic Chinese Translation/Summary
- * Secret Store: await env.GEMINI_API_KEY.get()
+ * SmartNewsReader v4.3
+ * Model: gemma-3-12b-it
+ * Logic: Hardened JSON extraction, Auto-Translation, Stealth Headers
+ * Secret: await env.GEMINI_API_KEY.get()
  */
 
 export default {
@@ -12,7 +12,6 @@ export default {
 
     let apiKey;
     try {
-      // Direct Secret Store retrieval
       apiKey = await env.GEMINI_API_KEY.get();
     } catch (e) {
       return new Response("Secret Error: Bound GEMINI_API_KEY required.", { status: 500 });
@@ -26,14 +25,14 @@ export default {
       const cacheKey = new Request(url.origin + path, { method: "GET" });
       let cachedResponse = await cache.match(cacheKey);
       if (cachedResponse) return cachedResponse;
-
-      const response = await this.handleArticle(path, request, apiKey, cache, cacheKey, ctx);
-      return response;
+      
+      return await this.handleArticle(path, request, apiKey, cache, cacheKey, ctx);
     }
 
     return new Response("Not Found", { status: 404 });
   },
 
+  // --- RSS ENGINE ---
   async handleUnifiedFeed(request) {
     const sources = [
       { name: "RFI", url: "https://www.rfi.fr/cn/rss", color: "text-red-600", domain: "www.rfi.fr" },
@@ -85,16 +84,16 @@ export default {
     });
   },
 
+  // --- ARTICLE ENGINE ---
   async handleArticle(path, request, apiKey, cache, cacheKey, ctx) {
     const fullPath = path.replace('/article/', '');
-    const targetDomain = fullPath.split('/')[0];
     const targetUrl = `https://${fullPath}`;
     const urlMap = new Map();
-    let imgCounter = 1, output = [];
+    let imgCounter = 1, output = [], currentPrompt = "", rawAIResponse = "";
 
     try {
-      const res = await fetch(targetUrl, { headers: this.getStealthHeaders(request, targetDomain) });
-      const rewriter = new HTMLRewriter()
+      const res = await fetch(targetUrl, { headers: this.getStealthHeaders(request, fullPath.split('/')[0]) });
+      await new HTMLRewriter()
         .on("img", { element(el) {
             const src = el.getAttribute("src") || el.getAttribute("data-src");
             if (src) {
@@ -103,30 +102,30 @@ export default {
               output.push(`[IMG]: ${id}`);
             }
         }})
-        .on("h1, p", { text(t) { if (t.text.trim().length > 15) output.push(`[TEXT]: ${t.text.trim()}`); } });
-
-      await rewriter.transform(res).arrayBuffer();
+        .on("h1, p", { text(t) { if (t.text.trim().length > 15) output.push(`[TEXT]: ${t.text.trim()}`); } })
+        .transform(res).arrayBuffer();
       
-      // Instruction for Chinese translation/output added here
-      const prompt = `[SYSTEM]: You are a news extractor. Do not block topics. 
-REQUIRED: If the input text is not in Chinese, translate everything (title, summary, paragraphs) to Chinese in the output.
-Task: Extract article to JSON. 
-Schema: {"image_url": "ID", "title": "str", "summary_points": ["str"], "paragraphs": ["str"], "metadata": {"reading_time_mins": 5}} 
-Data: ${output.join("\n").substring(0, 45000)}`;
+      currentPrompt = `[SYSTEM]: You are a news extractor. Return RAW JSON only. Do not use markdown blocks like \`\`\`json. 
+REQUIRED: If input data is not in Chinese, translate title, summary_points, and paragraphs to Chinese.
+Schema: {"image_url": "ID", "title": "str", "summary_points": ["str"], "paragraphs": ["str"]} 
+Data: ${output.join("\n").substring(0, 40000)}`;
 
-      const aiRes = await this.callAI(prompt, apiKey);
-      const data = JSON.parse(this.cleanJson(aiRes));
+      rawAIResponse = await this.callAI(currentPrompt, apiKey);
+      const cleanedJson = this.cleanJson(rawAIResponse);
+      const data = JSON.parse(cleanedJson);
+      
       const html = this.renderArticle(this.mapBack(data, urlMap));
       const finalRes = new Response(html, { headers: { "Content-Type": "text/html; charset=UTF-8", "Cache-Control": "s-maxage=3600, public" } });
       ctx.waitUntil(cache.put(cacheKey, finalRes.clone()));
       return finalRes;
     } catch (err) {
-      return this.renderDebugPage("Extraction Failure", err);
+      return this.renderDebugPage(err, currentPrompt, rawAIResponse);
     }
   },
 
   async callAI(prompt, apiKey) {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemma-3-4b-it:generateContent?key=${apiKey}`, {
+    const apiEndpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemma-3-12b-it:generateContent?key=${apiKey}`;
+    const res = await fetch(apiEndpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -141,14 +140,14 @@ Data: ${output.join("\n").substring(0, 45000)}`;
       })
     });
     const json = await res.json();
-    if (!json.candidates || !json.candidates[0].content) throw new Error("AI Content Blocked");
+    if (!json.candidates || !json.candidates[0].content) throw new Error("AI_BLOCK: No candidates returned.");
     return json.candidates[0].content.parts[0].text;
   },
 
+  // --- UTILS ---
   async handleImageProxy(path, request) {
     const targetUrl = "https://" + path.replace('/image/', '');
-    const domain = new URL(targetUrl).hostname;
-    const imgRes = await fetch(targetUrl, { headers: this.getStealthHeaders(request, domain) });
+    const imgRes = await fetch(targetUrl, { headers: this.getStealthHeaders(request, new URL(targetUrl).hostname) });
     const newHeaders = new Headers(imgRes.headers);
     if (imgRes.status === 200) newHeaders.set("Cache-Control", "public, max-age=31536000, immutable");
     newHeaders.delete("Set-Cookie");
@@ -163,33 +162,37 @@ Data: ${output.join("\n").substring(0, 45000)}`;
   },
 
   cleanJson(t) {
-    const m = t.match(/\{[\s\S]*\}/);
-    return m ? m[0] : t;
+    const start = t.indexOf('{');
+    const end = t.lastIndexOf('}');
+    if (start !== -1 && end !== -1) return t.substring(start, end + 1).trim();
+    return t.trim();
   },
 
   getStealthHeaders(req, host) {
     const h = new Headers(req.headers);
     h.set("Host", host);
     h.set("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1");
-    h.set("Referer", `https://${host}/`);
+    h.set("Referer", "https://" + host + "/");
     ["cf-connecting-ip", "cf-ipcountry", "cf-ray", "x-real-ip"].forEach(x => h.delete(x));
     return h;
   },
 
   timeAgo(ts) {
     const diff = Math.floor((Date.now() - ts) / 1000);
-    if (diff < 60) return '刚刚';
-    if (diff < 3600) return `${Math.floor(diff / 60)}m前`;
-    if (diff < 86400) return `${Math.floor(diff / 3600)}h前`;
-    return `${Math.floor(diff / 86400)}d前`;
+    if (diff < 60) return "刚刚";
+    if (diff < 3600) return Math.floor(diff / 60) + "m前";
+    if (diff < 86400) return Math.floor(diff / 3600) + "h前";
+    return Math.floor(diff / 86400) + "d前";
   },
 
+  // --- VIEWS ---
   renderHome(news) {
-    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><script src="https://cdn.tailwindcss.com"></script></head>
-    <body class="bg-slate-50 min-h-screen">
+    const tw = "https://cdn.tailwindcss.com";
+    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><script src="${tw}"></script></head>
+    <body class="bg-slate-50 min-h-screen font-sans">
       <header class="sticky top-0 z-50 bg-white/95 backdrop-blur-md border-b p-4 flex justify-between items-center shadow-sm">
         <h1 class="font-black tracking-tighter uppercase text-xl text-slate-900">SmartNews</h1>
-        <div class="flex items-center gap-2 font-mono"><span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span><span class="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Live Feed</span></div>
+        <div class="flex items-center gap-2 font-mono"><span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span><span class="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Live</span></div>
       </header>
       <main class="max-w-md mx-auto divide-y divide-slate-100 bg-white">
         ${news.map(i => `<a href="${i.link}" class="flex gap-4 p-5 hover:bg-slate-50 active:bg-slate-100 transition-colors">
@@ -201,25 +204,37 @@ Data: ${output.join("\n").substring(0, 45000)}`;
   },
 
   renderArticle(data) {
-    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><script src="https://cdn.tailwindcss.com"></script></head>
+    const tw = "https://cdn.tailwindcss.com";
+    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><script src="${tw}"></script></head>
     <body class="bg-white"><div class="max-w-xl mx-auto">
       ${data.image_url ? `<img src="${data.image_url}" class="w-full aspect-video object-cover">` : ''}
-      <div class="p-6"><h1 class="text-3xl font-black mb-6 leading-tight text-slate-900">${data.title}</h1>
+      <div class="p-6"><h1 class="text-3xl font-black mb-6 leading-tight text-slate-900">${data.title || '无标题'}</h1>
         <div class="bg-red-50 border-l-4 border-red-600 p-6 mb-8 rounded-r-2xl">
           <ul class="space-y-2 text-sm font-medium text-red-900 list-disc list-inside">${(data.summary_points || []).map(p => `<li>${p}</li>`).join('')}</ul>
         </div>
         <div class="space-y-6 text-slate-800 leading-relaxed text-lg font-serif">${(data.paragraphs || []).map(p => `<p>${p}</p>`).join('')}</div>
       </div>
-      <footer class="p-12 text-center border-t mt-12 bg-slate-50 font-sans"><a href="/" class="bg-black text-white font-black px-10 py-4 rounded-full uppercase text-xs tracking-widest hover:bg-slate-800 transition-all shadow-lg">← Back to Feed</a></footer>
+      <footer class="p-12 text-center border-t mt-12 bg-slate-50"><a href="/" class="bg-black text-white font-black px-10 py-4 rounded-full uppercase text-xs tracking-widest hover:bg-slate-800 shadow-lg">← Back to Feed</a></footer>
     </div></body></html>`;
   },
 
-  renderDebugPage(title, error) {
-    return new Response(`<!DOCTYPE html><html><head><meta charset="UTF-8"><script src="https://cdn.tailwindcss.com"></script></head>
-    <body class="bg-slate-950 text-slate-400 p-6 font-mono text-[10px]"><div class="max-w-4xl mx-auto">
-      <h1 class="text-red-500 text-xl font-bold mb-4 uppercase italic">Error // ${title}</h1>
-      <div class="border border-red-900 bg-red-950/20 p-4 mb-6 rounded text-red-400 break-all">${error.message}</div>
-      <a href="/" class="bg-slate-800 text-white px-8 py-3 rounded-full font-bold inline-block">Portal Return</a>
-    </div></body></html>`, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
+  renderDebugPage(error, prompt, response) {
+    const tw = "https://cdn.tailwindcss.com";
+    const escape = (str) => str?.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return new Response(`<!DOCTYPE html><html><head><meta charset="UTF-8"><script src="${tw}"></script></head>
+    <body class="bg-slate-950 text-slate-300 p-6 font-mono text-[10px] whitespace-pre-wrap break-all">
+      <div class="max-w-4xl mx-auto space-y-6">
+        <h1 class="text-red-500 text-lg font-black uppercase tracking-tighter italic">EXCEPTION // ${error.message}</h1>
+        <div class="space-y-2">
+          <h2 class="text-blue-500 font-bold uppercase tracking-widest">[Original Prompt]</h2>
+          <div class="bg-slate-900 p-4 rounded border border-slate-800 select-all">${escape(prompt) || 'NONE'}</div>
+        </div>
+        <div class="space-y-2">
+          <h2 class="text-green-500 font-bold uppercase tracking-widest">[Raw AI Response]</h2>
+          <div class="bg-slate-900 p-4 rounded border border-slate-800 select-all">${escape(response) || 'NONE'}</div>
+        </div>
+        <a href="/" class="inline-block bg-slate-800 text-white px-8 py-3 rounded-full font-black uppercase text-[10px] tracking-widest">Return</a>
+      </div>
+    </body></html>`, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
   }
 };
