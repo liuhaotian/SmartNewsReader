@@ -1,8 +1,7 @@
 /**
- * SmartNewsReader v4.6
- * Model: gemma-3-4b-it (Fast & Stable)
- * Logic: Paragraph Array, Hardened JSON Quote Protection
- * Secret: await env.GEMINI_API_KEY.get()
+ * SmartNewsReader v4.9
+ * Model: gemma-3-4b-it
+ * Feature: Absolute URL Resolution, HTTPS Enforcement, Meta-tag Priority
  */
 
 export default {
@@ -32,7 +31,7 @@ export default {
     return new Response("Not Found", { status: 404 });
   },
 
-  // --- RSS ENGINE ---
+  // --- RSS ENGINE (Stable) ---
   async handleUnifiedFeed(request) {
     const sources = [
       { name: "RFI", url: "https://www.rfi.fr/cn/rss", color: "text-red-600", domain: "www.rfi.fr" },
@@ -70,7 +69,6 @@ export default {
                          item.match(/<media:content[^>]*url="([\s\S]*?)"/) || 
                          item.match(/<enclosure[^>]*url="([\s\S]*?)"/) || 
                          item.match(/<img[^>]*src="([\s\S]*?)"/);
-      
       const media = mediaMatch ? mediaMatch[1] : "";
       const timestamp = pubDate ? new Date(pubDate).getTime() : 0;
       let articlePath = "#";
@@ -84,29 +82,55 @@ export default {
     });
   },
 
-  // --- ARTICLE ENGINE ---
+  // --- ARTICLE ENGINE (v4.9 Updated URL Resolution) ---
   async handleArticle(path, request, apiKey, cache, cacheKey, ctx) {
     const fullPath = path.replace('/article/', '');
     const targetUrl = `https://${fullPath}`;
     const urlMap = new Map();
     let imgCounter = 1, output = [], currentPrompt = "", rawAIResponse = "";
 
+    // Helper to resolve and enforce HTTPS
+    const resolveUrl = (src) => {
+      try {
+        let absolute = new URL(src, targetUrl).href;
+        return absolute.replace(/^http:/, 'https:');
+      } catch (e) { return null; }
+    };
+
     try {
       const res = await fetch(targetUrl, { headers: this.getStealthHeaders(request, fullPath.split('/')[0]) });
+      
       await new HTMLRewriter()
+        .on("meta", { element(el) {
+            const property = el.getAttribute("property") || el.getAttribute("name");
+            const content = el.getAttribute("content");
+            if (content && (property === "og:image" || property === "twitter:image")) {
+              const absUrl = resolveUrl(content);
+              if (absUrl) {
+                const id = `META_IMG`;
+                urlMap.set(id, `/image/${absUrl.replace(/^https?:\/\//, '')}`);
+                output.push(`[PRIORITY_IMAGE]: ${id} | [CONTEXT]: Social Preview`);
+              }
+            }
+        }})
         .on("img", { element(el) {
             const src = el.getAttribute("src") || el.getAttribute("data-src");
-            if (src) {
-              const id = `I${imgCounter++}`;
-              urlMap.set(id, `/image/${src.replace(/^https?:\/\//, '')}`);
-              output.push(`[IMG]: ${id}`);
+            const alt = el.getAttribute("alt") || "No description";
+            if (src && !src.startsWith('data:')) {
+              const absUrl = resolveUrl(src);
+              if (absUrl) {
+                const id = `I${imgCounter++}`;
+                urlMap.set(id, `/image/${absUrl.replace(/^https?:\/\//, '')}`);
+                output.push(`[IMG_ID]: ${id} | [ALT]: ${alt}`);
+              }
             }
         }})
         .on("h1, p", { text(t) { if (t.text.trim().length > 15) output.push(`[TEXT]: ${t.text.trim()}`); } })
         .transform(res).arrayBuffer();
       
       currentPrompt = `[SYSTEM]: You are a news extractor. Return RAW JSON only. No markdown.
-SAFETY: For all string values, ensure internal double quotes are escaped with a backslash (\\") so the JSON is valid.
+SAFETY: Escape internal double quotes (\\").
+IMAGE SELECTION: Review [PRIORITY_IMAGE] and [IMG_ID]. Prioritize [PRIORITY_IMAGE].
 REQUIRED: If input is not Chinese, translate everything to Chinese.
 Schema: {"image_url": "ID", "title": "str", "summary_points": ["str"], "paragraphs": ["str"]} 
 Data: ${output.join("\n").substring(0, 40000)}`;
@@ -131,12 +155,7 @@ Data: ${output.join("\n").substring(0, 40000)}`;
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
-        safetySettings: [
-          { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
-          { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
-          { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
-          { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
-        ],
+        safetySettings: [{ category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" }, { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" }, { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" }, { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }],
         generationConfig: { temperature: 0.1 }
       })
     });
@@ -145,7 +164,7 @@ Data: ${output.join("\n").substring(0, 40000)}`;
     return json.candidates[0].content.parts[0].text;
   },
 
-  // --- UTILS ---
+  // --- UTILS (Shared) ---
   async handleImageProxy(path, request) {
     const targetUrl = "https://" + path.replace('/image/', '');
     const imgRes = await fetch(targetUrl, { headers: this.getStealthHeaders(request, new URL(targetUrl).hostname) });
@@ -186,7 +205,7 @@ Data: ${output.join("\n").substring(0, 40000)}`;
     return Math.floor(diff / 86400) + "d前";
   },
 
-  // --- VIEWS ---
+  // --- VIEWS (Shared) ---
   renderHome(news) {
     const tw = "https://cdn.tailwindcss.com";
     return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><script src="${tw}"></script></head>
