@@ -1,7 +1,7 @@
 /**
- * SmartNewsReader v4.3
- * Model: gemma-3-12b-it
- * Logic: Hardened JSON extraction, Auto-Translation, Stealth Headers
+ * SmartNewsReader v4.6
+ * Model: gemma-3-4b-it (Fast & Stable)
+ * Logic: Paragraph Array, Hardened JSON Quote Protection
  * Secret: await env.GEMINI_API_KEY.get()
  */
 
@@ -105,8 +105,9 @@ export default {
         .on("h1, p", { text(t) { if (t.text.trim().length > 15) output.push(`[TEXT]: ${t.text.trim()}`); } })
         .transform(res).arrayBuffer();
       
-      currentPrompt = `[SYSTEM]: You are a news extractor. Return RAW JSON only. Do not use markdown blocks like \`\`\`json. 
-REQUIRED: If input data is not in Chinese, translate title, summary_points, and paragraphs to Chinese.
+      currentPrompt = `[SYSTEM]: You are a news extractor. Return RAW JSON only. No markdown.
+SAFETY: For all string values, ensure internal double quotes are escaped with a backslash (\\") so the JSON is valid.
+REQUIRED: If input is not Chinese, translate everything to Chinese.
 Schema: {"image_url": "ID", "title": "str", "summary_points": ["str"], "paragraphs": ["str"]} 
 Data: ${output.join("\n").substring(0, 40000)}`;
 
@@ -124,7 +125,7 @@ Data: ${output.join("\n").substring(0, 40000)}`;
   },
 
   async callAI(prompt, apiKey) {
-    const apiEndpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemma-3-12b-it:generateContent?key=${apiKey}`;
+    const apiEndpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemma-3-4b-it:generateContent?key=${apiKey}`;
     const res = await fetch(apiEndpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -206,13 +207,15 @@ Data: ${output.join("\n").substring(0, 40000)}`;
   renderArticle(data) {
     const tw = "https://cdn.tailwindcss.com";
     return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><script src="${tw}"></script></head>
-    <body class="bg-white"><div class="max-w-xl mx-auto">
+    <body class="bg-white font-sans"><div class="max-w-xl mx-auto">
       ${data.image_url ? `<img src="${data.image_url}" class="w-full aspect-video object-cover">` : ''}
       <div class="p-6"><h1 class="text-3xl font-black mb-6 leading-tight text-slate-900">${data.title || '无标题'}</h1>
         <div class="bg-red-50 border-l-4 border-red-600 p-6 mb-8 rounded-r-2xl">
           <ul class="space-y-2 text-sm font-medium text-red-900 list-disc list-inside">${(data.summary_points || []).map(p => `<li>${p}</li>`).join('')}</ul>
         </div>
-        <div class="space-y-6 text-slate-800 leading-relaxed text-lg font-serif">${(data.paragraphs || []).map(p => `<p>${p}</p>`).join('')}</div>
+        <div class="space-y-6 text-slate-800 leading-relaxed text-lg font-serif">
+          ${(data.paragraphs || []).map(p => `<p>${p}</p>`).join('')}
+        </div>
       </div>
       <footer class="p-12 text-center border-t mt-12 bg-slate-50"><a href="/" class="bg-black text-white font-black px-10 py-4 rounded-full uppercase text-xs tracking-widest hover:bg-slate-800 shadow-lg">← Back to Feed</a></footer>
     </div></body></html>`;
