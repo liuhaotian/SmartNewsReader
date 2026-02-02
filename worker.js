@@ -1,10 +1,11 @@
 /**
- * SmartNewsReader v7.5 - Master Baseline
- * - UI Update: "AI 总结" badge moved to bottom-right of summary block.
- * - Targeted Filtering: "神韵" category skipped ONLY for feed.epochtimes.com
- * - BBC Logic: Path transformation /trad -> /simp
- * - Source Labels: 法广, BBC, 亚广, 大纪元, 美国之音
- * - AI Prompt: Forced Simplified Chinese + Single Object Schema
+ * SmartNewsReader v7.8 - Final Production Master
+ * - Cache Fix: URL-only cache key to bypass CF Access session headers.
+ * - Targeted Filtering: "神韵" category skipped for feed.epochtimes.com only.
+ * - BBC Logic: Path transformation /trad -> /simp.
+ * - AI Prompt: Forced Simplified Chinese + Single Object Schema.
+ * - UI: "AI 总结" badge anchored to bottom-right.
+ * - Identity: Dynamic User-Agent mirroring.
  */
 
 export default {
@@ -23,12 +24,7 @@ export default {
     if (path === "/" || path === "") return await this.handleUnifiedFeed(request);
     
     if (path.startsWith('/article/')) {
-      const cache = caches.default;
-      const cacheKey = new Request(url.origin + path, { method: "GET" });
-      let cachedResponse = await cache.match(cacheKey);
-      if (cachedResponse) return cachedResponse;
-      
-      return await this.handleArticle(path, request, apiKey, cache, cacheKey, ctx);
+      return await this.handleArticle(path, request, apiKey, ctx);
     }
 
     return new Response("Not Found", { status: 404 });
@@ -65,6 +61,7 @@ export default {
     const newsItems = [];
 
     for (const item of items) {
+      // Precise Domain Filtering for Epoch Times
       if (source.domain === "feed.epochtimes.com") {
         const isShenYun = /<category>(?:<!\[CDATA\[)?神韵(?:\]\]>)?<\/category>/i.test(item);
         if (isShenYun) continue;
@@ -101,10 +98,21 @@ export default {
     return newsItems;
   },
 
-  async handleArticle(path, request, apiKey, cache, cacheKey, ctx) {
+  async handleArticle(path, request, apiKey, ctx) {
     const fullPath = path.replace('/article/', '');
     const targetUrl = `https://${fullPath}`;
-    
+    const cache = caches.default;
+
+    // Normalizing Cache Key to bypass CF Access Auth/Cookies
+    const cacheKey = new Request(new URL(request.url).toString(), { method: "GET" });
+
+    let cachedResponse = await cache.match(cacheKey);
+    if (cachedResponse) {
+      const hitRes = new Response(cachedResponse.body, cachedResponse);
+      hitRes.headers.set("X-Cache-Status", "HIT");
+      return hitRes;
+    }
+
     let pageTitle = "", socialImg = "", firstBodyImg = "", paragraphs = [];
     let currentPrompt = "", rawAIResponse = "";
 
@@ -133,10 +141,9 @@ export default {
         }})
         .transform(res).arrayBuffer();
 
-      if (paragraphs.length === 0) throw new Error("Zero Content Extracted");
-
       const cleanTitle = pageTitle.trim() || "News Article";
-
+      
+      // REVERTED PROMPT Logic
       currentPrompt = `[SYSTEM]: You are a news analyst. Summarize the text provided below into 3-5 concise bullet points in Simplified Chinese (简体中文).
 SCHEMA: Return exactly one JSON object. Do not wrap in an array. 
 {"summary": ["point 1", "point 2", "point 3"]}
@@ -157,8 +164,16 @@ ${paragraphs.join("\n").substring(0, 40000)}`;
       };
 
       const html = this.renderArticle(finalData);
-      const finalRes = new Response(html, { headers: { "Content-Type": "text/html; charset=UTF-8", "Cache-Control": "s-maxage=3600, public" } });
+      const finalRes = new Response(html, { 
+        headers: { 
+          "Content-Type": "text/html; charset=UTF-8",
+          "Cache-Control": "public, s-maxage=604800" 
+        } 
+      });
+
       ctx.waitUntil(cache.put(cacheKey, finalRes.clone()));
+
+      finalRes.headers.set("X-Cache-Status", "MISS");
       return finalRes;
     } catch (err) {
       return this.renderDebugPage(err, currentPrompt, rawAIResponse);
@@ -182,7 +197,6 @@ ${paragraphs.join("\n").substring(0, 40000)}`;
       const imgRes = await fetch(targetUrl, { headers: this.getStealthHeaders(request, new URL(targetUrl).hostname) });
       const newHeaders = new Headers(imgRes.headers);
       if (imgRes.status === 200) newHeaders.set("Cache-Control", "public, max-age=31536000, immutable");
-      newHeaders.delete("Set-Cookie");
       return new Response(imgRes.body, { status: imgRes.status, headers: newHeaders });
     } catch(e) { return new Response(null, { status: 404 }); }
   },
