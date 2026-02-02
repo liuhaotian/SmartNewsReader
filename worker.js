@@ -1,7 +1,7 @@
 /**
- * SmartNewsReader v5.7
- * Model: google/gemma-3-4b-it (128K Context)
- * Fixed: Restored Epoch Times Source, Fail-Fast Debug, BFCache Sync
+ * SmartNewsReader v6.0
+ * Architecture: Normalized URL Strategy (Stripped Query)
+ * Model: Gemma-3-4b-it
  */
 
 export default {
@@ -72,7 +72,8 @@ export default {
       if (link) {
         try {
           const u = new URL(link.trim());
-          articlePath = `/article/${u.hostname}${u.pathname}${u.search}`;
+          // NORMALIZATION: Strip the query string here so hashes always match
+          articlePath = `/article/${u.hostname}${u.pathname}`;
         } catch(e) {}
       }
       return { 
@@ -89,7 +90,7 @@ export default {
   // --- HYBRID ARTICLE ENGINE ---
   async handleArticle(path, request, apiKey, cache, cacheKey, ctx) {
     const fullPath = path.replace('/article/', '');
-    const targetUrl = `https://${fullPath}`;
+    const targetUrl = `https://${fullPath}`; // No search params passed to target site
     
     let pageTitle = "", socialImg = "", firstBodyImg = "", paragraphs = [];
     let currentPrompt = "", rawAIResponse = "";
@@ -100,7 +101,7 @@ export default {
 
     try {
       const res = await fetch(targetUrl, { headers: this.getStealthHeaders(request, fullPath.split('/')[0]) });
-      if (!res.ok) throw new Error(`Fetch Exception: HTTP ${res.status} from source`);
+      if (!res.ok) throw new Error(`Fetch Exception: HTTP ${res.status}`);
 
       await new HTMLRewriter()
         .on("title", { text(t) { pageTitle += t.text; } })
@@ -123,8 +124,13 @@ export default {
 
       const cleanTitle = pageTitle.trim() || "News Article";
 
-      // Data-Last Strategy for Gemma-3
-      currentPrompt = `[SYSTEM]: News summary analyst. Output RAW JSON ONLY: {"summary": ["point 1", "point 2"]} in Chinese.\n[TITLE]: ${cleanTitle}\n[DATA]: ${paragraphs.join("\n").substring(0, 40000)}`;
+      currentPrompt = `[SYSTEM]: You are a news analyst. Summarize the text provided below into 3-5 concise bullet points in Chinese. 
+FORMAT: Return RAW JSON only: {"summary": ["point 1", "point 2"]}
+
+[TITLE]: ${cleanTitle}
+
+[DATA_BLOCK]:
+${paragraphs.join("\n").substring(0, 40000)}`;
 
       rawAIResponse = await this.callAI(currentPrompt, apiKey);
       const aiJson = JSON.parse(this.cleanJson(rawAIResponse));
@@ -197,8 +203,8 @@ export default {
     <style>.is-read { opacity: 0.3; filter: grayscale(1); transition: opacity 0.5s ease; }</style></head>
     <body class="bg-slate-50 min-h-screen font-sans">
       <header class="sticky top-0 z-50 bg-white/95 backdrop-blur-md border-b p-4 flex justify-between items-center shadow-sm">
-        <h1 class="font-black text-xl text-slate-900 tracking-tighter uppercase">SmartNews</h1>
-        <button onclick="if(confirm('Clear?')){localStorage.clear();location.reload();}" class="text-[9px] font-bold text-slate-400 border px-2 py-1 rounded hover:bg-slate-50 uppercase">Reset</button>
+        <h1 class="font-black text-xl text-slate-900 tracking-tighter uppercase text-center">SmartNews</h1>
+        <button onclick="if(confirm('Clear history?')){localStorage.clear();location.reload();}" class="text-[9px] font-bold text-slate-400 border px-2 py-1 rounded hover:bg-slate-50 uppercase">Reset</button>
       </header>
       <main id="feed" class="max-w-md mx-auto divide-y bg-white">
         ${news.map(i => `
@@ -235,7 +241,7 @@ export default {
         </div>
         <div class="space-y-6 text-slate-800 leading-relaxed text-lg">${data.paragraphs.map(p => `<p>${p}</p>`).join('')}</div>
       </div>
-      <footer class="p-10 border-t mt-10 text-center"><a href="/" class="bg-black text-white px-10 py-4 rounded-full text-[10px] font-black tracking-widest uppercase shadow-lg">← Back to Feed</a></footer>
+      <footer class="p-10 border-t mt-10 text-center"><a href="/" class="bg-black text-white px-10 py-4 rounded-full text-[10px] font-black tracking-widest uppercase shadow-lg hover:bg-slate-800 transition-colors">← Back to Feed</a></footer>
     </div>
     <script>
       const articleId = btoa(window.location.pathname);
