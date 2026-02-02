@@ -1,8 +1,8 @@
 /**
- * SmartNewsReader v6.5
- * - Added Source: RFA (Radio Free Asia) Mandarin
- * - Normalization: Strips query for history, preserves for media
- * - AI Label: "AI 总结"
+ * SmartNewsReader v6.7 - Baseline Updated
+ * - StealthHeaders: Now mirrors the User's actual Browser UA
+ * - Routing: Unified Feed + Auth-Safe Image Proxy
+ * - AI Branding: "AI 总结"
  */
 
 export default {
@@ -37,7 +37,7 @@ export default {
     const sources = [
       { name: "RFI", url: "https://www.rfi.fr/cn/rss", color: "text-red-600", domain: "www.rfi.fr" },
       { name: "BBC", url: "https://feeds.bbci.co.uk/zhongwen/trad/rss.xml", color: "text-orange-700", domain: "feeds.bbci.co.uk" },
-      { name: "RFA", url: "https://www.rfa.org/arc/outboundfeeds/mandarin/rss/", color: "text-orange-600", domain: "www.rfa.org" }, // Added RFA
+      { name: "RFA", url: "https://www.rfa.org/arc/outboundfeeds/mandarin/rss/", color: "text-orange-600", domain: "www.rfa.org" },
       { name: "大纪元", url: "https://feed.epochtimes.com/feed", color: "text-blue-600", domain: "feed.epochtimes.com" },
       { name: "VOA", url: "https://www.voachinese.com/api/zm_yql-vomx-tpeybti", color: "text-sky-800", domain: "www.voachinese.com" }
     ];
@@ -180,11 +180,18 @@ ${paragraphs.join("\n").substring(0, 40000)}`;
   },
 
   getStealthHeaders(req, host) {
-    const h = new Headers(req.headers);
+    const h = new Headers();
+    // Use the User's ACTUAL browser User-Agent
+    const userUA = req.headers.get("User-Agent") || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+    
     h.set("Host", host);
-    h.set("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1");
+    h.set("User-Agent", userUA);
     h.set("Referer", `https://${host}/`);
-    ["cf-connecting-ip", "cf-ipcountry", "cf-ray", "x-real-ip"].forEach(x => h.delete(x));
+    h.set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8");
+    h.set("Accept-Language", "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7");
+    
+    // Explicitly delete Cloudflare/Proxy identifying headers
+    ["cf-connecting-ip", "cf-ipcountry", "cf-ray", "x-real-ip", "x-forwarded-for"].forEach(x => h.delete(x));
     return h;
   },
 
