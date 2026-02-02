@@ -1,9 +1,8 @@
 /**
- * SmartNewsReader v6.4 - Stabilized Baseline
+ * SmartNewsReader v6.5
+ * - Added Source: RFA (Radio Free Asia) Mandarin
+ * - Normalization: Strips query for history, preserves for media
  * - AI Label: "AI 总结"
- * - Prompt: Reverted to previous stable version
- * - Image Proxy: Auth-Safe (Preserves full query string)
- * - History: Normalized Path for stable "Read" status
  */
 
 export default {
@@ -38,6 +37,7 @@ export default {
     const sources = [
       { name: "RFI", url: "https://www.rfi.fr/cn/rss", color: "text-red-600", domain: "www.rfi.fr" },
       { name: "BBC", url: "https://feeds.bbci.co.uk/zhongwen/trad/rss.xml", color: "text-orange-700", domain: "feeds.bbci.co.uk" },
+      { name: "RFA", url: "https://www.rfa.org/arc/outboundfeeds/mandarin/rss/", color: "text-orange-600", domain: "www.rfa.org" }, // Added RFA
       { name: "大纪元", url: "https://feed.epochtimes.com/feed", color: "text-blue-600", domain: "feed.epochtimes.com" },
       { name: "VOA", url: "https://www.voachinese.com/api/zm_yql-vomx-tpeybti", color: "text-sky-800", domain: "www.voachinese.com" }
     ];
@@ -124,7 +124,6 @@ export default {
 
       const cleanTitle = pageTitle.trim() || "News Article";
 
-      // REVERTED TO PREVIOUS STABLE PROMPT
       currentPrompt = `[SYSTEM]: You are a news analyst. Summarize the text provided below into 3-5 concise bullet points in Chinese. 
 FORMAT: Return RAW JSON only: {"summary": ["point 1", "point 2"]}
 
