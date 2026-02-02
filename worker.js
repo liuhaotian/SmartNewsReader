@@ -1,8 +1,9 @@
 /**
- * SmartNewsReader v6.7 - Baseline Updated
- * - StealthHeaders: Now mirrors the User's actual Browser UA
- * - Routing: Unified Feed + Auth-Safe Image Proxy
- * - AI Branding: "AI 总结"
+ * SmartNewsReader v7.0 - Full Master Baseline
+ * - BBC Logic: Path transformation /trad -> /simp
+ * - Source Labels: 法广, BBC, 亚广, 大纪元, 美国之音
+ * - AI Prompt: Forced Simplified Chinese + Single JSON Object Schema
+ * - Header Logic: Dynamic User-Agent mirroring
  */
 
 export default {
@@ -14,7 +15,7 @@ export default {
     try {
       apiKey = await env.GEMINI_API_KEY.get();
     } catch (e) {
-      return new Response("Secret Error: Bound GEMINI_API_KEY required.", { status: 500 });
+      return new Response("Secret Error: GEMINI_API_KEY binding required.", { status: 500 });
     }
 
     if (path.startsWith('/image/')) return await this.handleImageProxy(url, request);
@@ -35,11 +36,11 @@ export default {
   // --- RSS ENGINE ---
   async handleUnifiedFeed(request) {
     const sources = [
-      { name: "RFI", url: "https://www.rfi.fr/cn/rss", color: "text-red-600", domain: "www.rfi.fr" },
+      { name: "法广", url: "https://www.rfi.fr/cn/rss", color: "text-red-600", domain: "www.rfi.fr" },
       { name: "BBC", url: "https://feeds.bbci.co.uk/zhongwen/trad/rss.xml", color: "text-orange-700", domain: "feeds.bbci.co.uk" },
-      { name: "RFA", url: "https://www.rfa.org/arc/outboundfeeds/mandarin/rss/", color: "text-orange-600", domain: "www.rfa.org" },
-      { name: "大纪元", url: "https://feed.epochtimes.com/feed", color: "text-blue-600", domain: "feed.epochtimes.com" },
-      { name: "VOA", url: "https://www.voachinese.com/api/zm_yql-vomx-tpeybti", color: "text-sky-800", domain: "www.voachinese.com" }
+      { name: "亚广", url: "https://www.rfa.org/arc/outboundfeeds/mandarin/rss/", color: "text-orange-600", domain: "www.rfa.org" },
+      { name: "大纪元", url: "https://feed.epochtimes.com/gb/feed", color: "text-blue-600", domain: "feed.epochtimes.com" },
+      { name: "美国之音", url: "https://www.voachinese.com/api/zm_yql-vomx-tpeybti", color: "text-sky-800", domain: "www.voachinese.com" }
     ];
 
     const feedResults = await Promise.all(
@@ -62,7 +63,7 @@ export default {
     const items = xml.match(/<item>[\s\S]*?<\/item>/g) || [];
     return items.map(item => {
       const title = (item.match(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>/) || item.match(/<title>([\s\S]*?)<\/title>/))?.[1] || "No Title";
-      const link = (item.match(/<link>([\s\S]*?)<\/link>/))?.[1] || "";
+      let link = (item.match(/<link>([\s\S]*?)<\/link>/))?.[1] || "";
       const pubDate = (item.match(/<pubDate>([\s\S]*?)<\/pubDate>/))?.[1] || "";
       
       const mediaMatch = item.match(/<media:thumbnail[^>]*url="([\s\S]*?)"/) || 
@@ -74,6 +75,13 @@ export default {
       if (link) {
         try {
           const u = new URL(link.trim());
+          
+          // Graceful transformation for BBC articles
+          if (u.hostname.includes("bbc.com") && u.pathname.endsWith("/trad")) {
+            u.pathname = u.pathname.replace(/\/trad$/, '/simp');
+          }
+
+          // Use normalized path for history and routing (strip query)
           articlePath = `/article/${u.hostname}${u.pathname}`;
         } catch(e) {}
       }
@@ -124,8 +132,10 @@ export default {
 
       const cleanTitle = pageTitle.trim() || "News Article";
 
-      currentPrompt = `[SYSTEM]: You are a news analyst. Summarize the text provided below into 3-5 concise bullet points in Chinese. 
-FORMAT: Return RAW JSON only: {"summary": ["point 1", "point 2"]}
+      // Hardened prompt for Simplified Chinese and strict JSON object schema
+      currentPrompt = `[SYSTEM]: You are a news analyst. Summarize the text provided below into 3-5 concise bullet points in Simplified Chinese (简体中文).
+SCHEMA: Return exactly one JSON object. Do not wrap in an array. 
+{"summary": ["point 1", "point 2", "point 3"]}
 
 [TITLE]: ${cleanTitle}
 
@@ -181,16 +191,12 @@ ${paragraphs.join("\n").substring(0, 40000)}`;
 
   getStealthHeaders(req, host) {
     const h = new Headers();
-    // Use the User's ACTUAL browser User-Agent
-    const userUA = req.headers.get("User-Agent") || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
-    
+    const userUA = req.headers.get("User-Agent") || "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15";
     h.set("Host", host);
     h.set("User-Agent", userUA);
     h.set("Referer", `https://${host}/`);
     h.set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8");
-    h.set("Accept-Language", "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7");
-    
-    // Explicitly delete Cloudflare/Proxy identifying headers
+    h.set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
     ["cf-connecting-ip", "cf-ipcountry", "cf-ray", "x-real-ip", "x-forwarded-for"].forEach(x => h.delete(x));
     return h;
   },
