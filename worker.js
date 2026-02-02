@@ -1,7 +1,7 @@
 /**
- * SmartNewsReader v5.2.2
- * Architecture: Hybrid (Deterministic + AI Synthesis)
- * Features: <enclosure> support, Data-Last prompting, Full Debug View
+ * SmartNewsReader v5.4
+ * Features: LocalStorage (1s dwell), BFCache Awareness (pageshow), 
+ * <enclosure> support, Data-Last Prompting, 15-char trim, Debug View.
  */
 
 export default {
@@ -125,7 +125,6 @@ export default {
       const finalImg = socialImg || firstBodyImg;
       const cleanTitle = pageTitle.trim() || "News Article";
 
-      // AI Strategy: Data-Last
       currentPrompt = `[SYSTEM]: You are a news analyst. Summarize the text provided below into 3-5 concise bullet points in Chinese. 
 FORMAT: Return RAW JSON only: {"summary": ["point 1", "point 2"]}
 
@@ -160,7 +159,6 @@ ${paragraphs.join("\n").substring(0, 15000)}`;
       body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.1 } })
     });
     const json = await res.json();
-    if (!json.candidates?.[0]?.content?.parts?.[0]?.text) throw new Error("AI Empty Response: " + JSON.stringify(json));
     return json.candidates[0].content.parts[0].text;
   },
 
@@ -202,14 +200,16 @@ ${paragraphs.join("\n").substring(0, 15000)}`;
   // --- VIEWS ---
   renderHome(news) {
     const tw = "https://cdn.tailwindcss.com";
-    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><script src="${tw}"></script></head>
+    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><script src="${tw}"></script>
+    <style>.is-read { opacity: 0.3; filter: grayscale(1); transition: opacity 0.5s ease; }</style></head>
     <body class="bg-slate-50 min-h-screen font-sans">
       <header class="sticky top-0 z-50 bg-white/95 backdrop-blur-md border-b p-4 flex justify-between items-center shadow-sm">
         <h1 class="font-black text-xl text-slate-900 tracking-tighter uppercase">SmartNews</h1>
-        <div class="font-mono text-[10px] text-slate-500 font-bold tracking-widest uppercase">LIVE</div>
+        <button onclick="if(confirm('Clear read history?')){localStorage.clear();location.reload();}" class="text-[9px] font-bold text-slate-400 border px-2 py-1 rounded hover:bg-slate-50 uppercase">Reset</button>
       </header>
-      <main class="max-w-md mx-auto divide-y bg-white">
-        ${news.map(i => `<a href="${i.link}" class="flex gap-4 p-5 hover:bg-slate-50 transition-colors">
+      <main id="feed" class="max-w-md mx-auto divide-y bg-white">
+        ${news.map(i => `
+        <a href="${i.link}" data-id="${btoa(i.link)}" class="news-card flex gap-4 p-5 hover:bg-slate-50 transition-all duration-300">
           <div class="w-24 h-16 shrink-0 rounded overflow-hidden bg-slate-100">${i.image ? `<img src="${i.image}" class="w-full h-full object-cover" loading="lazy">` : ''}</div>
           <div class="flex flex-col justify-between py-0.5">
             <h2 class="text-xs font-bold leading-snug text-slate-800 line-clamp-2">${i.title}</h2>
@@ -219,7 +219,17 @@ ${paragraphs.join("\n").substring(0, 15000)}`;
             </div>
           </div>
         </a>`).join('')}
-      </main></body></html>`;
+      </main>
+      <script>
+        const syncReadStatus = () => {
+          document.querySelectorAll('.news-card').forEach(card => {
+            if (localStorage.getItem('read_' + card.dataset.id)) card.classList.add('is-read');
+          });
+        };
+        syncReadStatus();
+        window.addEventListener('pageshow', (e) => { if (e.persisted) syncReadStatus(); });
+      </script>
+    </body></html>`;
   },
 
   renderArticle(data) {
@@ -234,14 +244,17 @@ ${paragraphs.join("\n").substring(0, 15000)}`;
             ${data.summary_points.map(p => `<li>${p}</li>`).join('')}
           </ul>
         </div>
-        <div class="space-y-6 text-slate-800 leading-relaxed text-lg">
-          ${data.paragraphs.map(p => `<p>${p}</p>`).join('')}
-        </div>
+        <div class="space-y-6 text-slate-800 leading-relaxed text-lg">${data.paragraphs.map(p => `<p>${p}</p>`).join('')}</div>
       </div>
       <footer class="p-10 border-t mt-10 text-center bg-slate-50">
-        <a href="/" class="bg-black text-white px-10 py-4 rounded-full text-[10px] font-black tracking-widest uppercase hover:bg-slate-800 shadow-lg">← Back to Feed</a>
+        <a href="/" class="bg-black text-white px-10 py-4 rounded-full text-[10px] font-black tracking-widest uppercase hover:bg-slate-800 transition-colors shadow-lg">← Back to Feed</a>
       </footer>
-    </div></body></html>`;
+    </div>
+    <script>
+      const articleId = btoa(window.location.pathname);
+      setTimeout(() => { localStorage.setItem('read_' + articleId, Date.now()); }, 1000);
+    </script>
+    </body></html>`;
   },
 
   renderDebugPage(err, prompt, response) {
@@ -250,7 +263,7 @@ ${paragraphs.join("\n").substring(0, 15000)}`;
     return new Response(`<!DOCTYPE html><html><head><meta charset="UTF-8"><script src="${tw}"></script></head>
     <body class="bg-slate-950 text-slate-300 p-6 font-mono text-[10px] whitespace-pre-wrap break-all">
       <div class="max-w-4xl mx-auto space-y-6">
-        <h1 class="text-red-500 text-lg font-black uppercase tracking-tighter italic">EXCEPTION // ${err.message}</h1>
+        <h1 class="text-red-500 text-lg font-black uppercase italic tracking-tighter">EXCEPTION // ${err.message}</h1>
         <div class="space-y-2">
           <h2 class="text-blue-500 font-bold uppercase tracking-widest">[Original Prompt]</h2>
           <div class="bg-slate-900 p-4 rounded border border-slate-800 select-all">${escape(prompt) || 'NONE'}</div>
