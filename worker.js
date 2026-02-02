@@ -1,8 +1,9 @@
 /**
- * SmartNewsReader v7.0 - Full Master Baseline
+ * SmartNewsReader v7.4 - Final Master Baseline
+ * - Targeted Filtering: "神韵" category skipped ONLY for feed.epochtimes.com
  * - BBC Logic: Path transformation /trad -> /simp
  * - Source Labels: 法广, BBC, 亚广, 大纪元, 美国之音
- * - AI Prompt: Forced Simplified Chinese + Single JSON Object Schema
+ * - AI Prompt: Forced Simplified Chinese + Single Object Schema
  * - Header Logic: Dynamic User-Agent mirroring
  */
 
@@ -61,7 +62,15 @@ export default {
 
   parseRSS(xml, source) {
     const items = xml.match(/<item>[\s\S]*?<\/item>/g) || [];
-    return items.map(item => {
+    const newsItems = [];
+
+    for (const item of items) {
+      // TARGETED DOMAIN FILTERING: Skip "神韵" category for Epoch Times domain only
+      if (source.domain === "feed.epochtimes.com") {
+        const isShenYun = /<category>(?:<!\[CDATA\[)?神韵(?:\]\]>)?<\/category>/i.test(item);
+        if (isShenYun) continue;
+      }
+
       const title = (item.match(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>/) || item.match(/<title>([\s\S]*?)<\/title>/))?.[1] || "No Title";
       let link = (item.match(/<link>([\s\S]*?)<\/link>/))?.[1] || "";
       const pubDate = (item.match(/<pubDate>([\s\S]*?)<\/pubDate>/))?.[1] || "";
@@ -76,7 +85,7 @@ export default {
         try {
           const u = new URL(link.trim());
           
-          // Graceful transformation for BBC articles
+          // BBC Graceful transformation: /trad -> /simp
           if (u.hostname.includes("bbc.com") && u.pathname.endsWith("/trad")) {
             u.pathname = u.pathname.replace(/\/trad$/, '/simp');
           }
@@ -85,15 +94,16 @@ export default {
           articlePath = `/article/${u.hostname}${u.pathname}`;
         } catch(e) {}
       }
-      return { 
+      newsItems.push({ 
         title, 
         link: articlePath, 
         image: mediaMatch ? `/image/${mediaMatch[1].replace(/^https?:\/\//, '')}` : "", 
         source: source.name, 
         color: source.color, 
         timestamp: pubDate ? new Date(pubDate).getTime() : 0 
-      };
-    });
+      });
+    }
+    return newsItems;
   },
 
   async handleArticle(path, request, apiKey, cache, cacheKey, ctx) {
@@ -132,7 +142,6 @@ export default {
 
       const cleanTitle = pageTitle.trim() || "News Article";
 
-      // Hardened prompt for Simplified Chinese and strict JSON object schema
       currentPrompt = `[SYSTEM]: You are a news analyst. Summarize the text provided below into 3-5 concise bullet points in Simplified Chinese (简体中文).
 SCHEMA: Return exactly one JSON object. Do not wrap in an array. 
 {"summary": ["point 1", "point 2", "point 3"]}
