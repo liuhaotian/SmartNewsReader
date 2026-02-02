@@ -1,7 +1,9 @@
 /**
- * SmartNewsReader v6.0
- * Architecture: Normalized URL Strategy (Stripped Query)
- * Model: Gemma-3-4b-it
+ * SmartNewsReader v6.4 - Stabilized Baseline
+ * - AI Label: "AI 总结"
+ * - Prompt: Reverted to previous stable version
+ * - Image Proxy: Auth-Safe (Preserves full query string)
+ * - History: Normalized Path for stable "Read" status
  */
 
 export default {
@@ -16,7 +18,7 @@ export default {
       return new Response("Secret Error: Bound GEMINI_API_KEY required.", { status: 500 });
     }
 
-    if (path.startsWith('/image/')) return await this.handleImageProxy(path, request);
+    if (path.startsWith('/image/')) return await this.handleImageProxy(url, request);
     if (path === "/" || path === "") return await this.handleUnifiedFeed(request);
     
     if (path.startsWith('/article/')) {
@@ -72,7 +74,6 @@ export default {
       if (link) {
         try {
           const u = new URL(link.trim());
-          // NORMALIZATION: Strip the query string here so hashes always match
           articlePath = `/article/${u.hostname}${u.pathname}`;
         } catch(e) {}
       }
@@ -87,10 +88,9 @@ export default {
     });
   },
 
-  // --- HYBRID ARTICLE ENGINE ---
   async handleArticle(path, request, apiKey, cache, cacheKey, ctx) {
     const fullPath = path.replace('/article/', '');
-    const targetUrl = `https://${fullPath}`; // No search params passed to target site
+    const targetUrl = `https://${fullPath}`;
     
     let pageTitle = "", socialImg = "", firstBodyImg = "", paragraphs = [];
     let currentPrompt = "", rawAIResponse = "";
@@ -120,10 +120,11 @@ export default {
         }})
         .transform(res).arrayBuffer();
 
-      if (paragraphs.length === 0) throw new Error("Zero Content Extracted (Anti-bot or SPA detected)");
+      if (paragraphs.length === 0) throw new Error("Zero Content Extracted");
 
       const cleanTitle = pageTitle.trim() || "News Article";
 
+      // REVERTED TO PREVIOUS STABLE PROMPT
       currentPrompt = `[SYSTEM]: You are a news analyst. Summarize the text provided below into 3-5 concise bullet points in Chinese. 
 FORMAT: Return RAW JSON only: {"summary": ["point 1", "point 2"]}
 
@@ -161,9 +162,9 @@ ${paragraphs.join("\n").substring(0, 40000)}`;
     return json.candidates[0].content.parts[0].text;
   },
 
-  // --- UTILS ---
-  async handleImageProxy(path, request) {
-    const targetUrl = "https://" + path.replace('/image/', '');
+  async handleImageProxy(workerUrl, request) {
+    const targetPathWithQuery = workerUrl.pathname.replace('/image/', '') + workerUrl.search;
+    const targetUrl = "https://" + targetPathWithQuery;
     try {
       const imgRes = await fetch(targetUrl, { headers: this.getStealthHeaders(request, new URL(targetUrl).hostname) });
       const newHeaders = new Headers(imgRes.headers);
@@ -196,14 +197,13 @@ ${paragraphs.join("\n").substring(0, 40000)}`;
     return Math.floor(diff / 86400) + "d前";
   },
 
-  // --- VIEWS ---
   renderHome(news) {
     const tw = "https://cdn.tailwindcss.com";
     return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><script src="${tw}"></script>
     <style>.is-read { opacity: 0.3; filter: grayscale(1); transition: opacity 0.5s ease; }</style></head>
     <body class="bg-slate-50 min-h-screen font-sans">
       <header class="sticky top-0 z-50 bg-white/95 backdrop-blur-md border-b p-4 flex justify-between items-center shadow-sm">
-        <h1 class="font-black text-xl text-slate-900 tracking-tighter uppercase text-center">SmartNews</h1>
+        <h1 class="font-black text-xl text-slate-900 tracking-tighter uppercase">SmartNews</h1>
         <button onclick="if(confirm('Clear history?')){localStorage.clear();location.reload();}" class="text-[9px] font-bold text-slate-400 border px-2 py-1 rounded hover:bg-slate-50 uppercase">Reset</button>
       </header>
       <main id="feed" class="max-w-md mx-auto divide-y bg-white">
@@ -234,8 +234,11 @@ ${paragraphs.join("\n").substring(0, 40000)}`;
       ${data.image_url ? `<img src="${data.image_url}" class="w-full aspect-video object-cover">` : ''}
       <div class="p-6">
         <h1 class="text-2xl font-black mb-6 leading-tight text-slate-900">${data.title}</h1>
-        <div class="bg-red-50 border-l-4 border-red-600 p-5 mb-8 rounded-r-xl shadow-sm text-sm font-medium text-red-900">
-          <ul class="space-y-2 list-disc list-inside">
+        <div class="bg-red-50 border-l-4 border-red-600 p-5 mb-8 rounded-r-xl shadow-sm relative">
+          <div class="absolute top-1.5 right-2 opacity-30">
+            <span class="text-[7px] font-black uppercase tracking-tighter text-red-900 italic">AI 总结</span>
+          </div>
+          <ul class="space-y-2 list-disc list-inside text-sm font-medium text-red-900">
             ${data.summary_points.map(p => `<li>${p}</li>`).join('')}
           </ul>
         </div>
