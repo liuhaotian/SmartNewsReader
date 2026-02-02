@@ -1,10 +1,10 @@
 /**
- * SmartNewsReader v7.4 - Final Master Baseline
+ * SmartNewsReader v7.5 - Master Baseline
+ * - UI Update: "AI 总结" badge moved to bottom-right of summary block.
  * - Targeted Filtering: "神韵" category skipped ONLY for feed.epochtimes.com
  * - BBC Logic: Path transformation /trad -> /simp
  * - Source Labels: 法广, BBC, 亚广, 大纪元, 美国之音
  * - AI Prompt: Forced Simplified Chinese + Single Object Schema
- * - Header Logic: Dynamic User-Agent mirroring
  */
 
 export default {
@@ -65,7 +65,6 @@ export default {
     const newsItems = [];
 
     for (const item of items) {
-      // TARGETED DOMAIN FILTERING: Skip "神韵" category for Epoch Times domain only
       if (source.domain === "feed.epochtimes.com") {
         const isShenYun = /<category>(?:<!\[CDATA\[)?神韵(?:\]\]>)?<\/category>/i.test(item);
         if (isShenYun) continue;
@@ -84,13 +83,9 @@ export default {
       if (link) {
         try {
           const u = new URL(link.trim());
-          
-          // BBC Graceful transformation: /trad -> /simp
           if (u.hostname.includes("bbc.com") && u.pathname.endsWith("/trad")) {
             u.pathname = u.pathname.replace(/\/trad$/, '/simp');
           }
-
-          // Use normalized path for history and routing (strip query)
           articlePath = `/article/${u.hostname}${u.pathname}`;
         } catch(e) {}
       }
@@ -256,7 +251,7 @@ ${paragraphs.join("\n").substring(0, 40000)}`;
       <div class="p-6">
         <h1 class="text-2xl font-black mb-6 leading-tight text-slate-900">${data.title}</h1>
         <div class="bg-red-50 border-l-4 border-red-600 p-5 mb-8 rounded-r-xl shadow-sm relative">
-          <div class="absolute top-1.5 right-2 opacity-30">
+          <div class="absolute bottom-1.5 right-2 opacity-30">
             <span class="text-[7px] font-black uppercase tracking-tighter text-red-900 italic">AI 总结</span>
           </div>
           <ul class="space-y-2 list-disc list-inside text-sm font-medium text-red-900">
