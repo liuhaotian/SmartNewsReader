@@ -1,7 +1,7 @@
 /**
- * SmartNewsReader v5.4
- * Features: LocalStorage (1s dwell), BFCache Awareness (pageshow), 
- * <enclosure> support, Data-Last Prompting, 15-char trim, Debug View.
+ * SmartNewsReader v5.7
+ * Model: google/gemma-3-4b-it (128K Context)
+ * Fixed: Restored Epoch Times Source, Fail-Fast Debug, BFCache Sync
  */
 
 export default {
@@ -91,12 +91,8 @@ export default {
     const fullPath = path.replace('/article/', '');
     const targetUrl = `https://${fullPath}`;
     
-    let pageTitle = "";
-    let socialImg = "";
-    let firstBodyImg = "";
-    let paragraphs = [];
-    let currentPrompt = "";
-    let rawAIResponse = "";
+    let pageTitle = "", socialImg = "", firstBodyImg = "", paragraphs = [];
+    let currentPrompt = "", rawAIResponse = "";
 
     const resolveUrl = (src) => {
       try { return new URL(src, targetUrl).href.replace(/^http:/, 'https:'); } catch (e) { return null; }
@@ -104,7 +100,8 @@ export default {
 
     try {
       const res = await fetch(targetUrl, { headers: this.getStealthHeaders(request, fullPath.split('/')[0]) });
-      
+      if (!res.ok) throw new Error(`Fetch Exception: HTTP ${res.status} from source`);
+
       await new HTMLRewriter()
         .on("title", { text(t) { pageTitle += t.text; } })
         .on("meta", { element(el) {
@@ -122,23 +119,19 @@ export default {
         }})
         .transform(res).arrayBuffer();
 
-      const finalImg = socialImg || firstBodyImg;
+      if (paragraphs.length === 0) throw new Error("Zero Content Extracted (Anti-bot or SPA detected)");
+
       const cleanTitle = pageTitle.trim() || "News Article";
 
-      currentPrompt = `[SYSTEM]: You are a news analyst. Summarize the text provided below into 3-5 concise bullet points in Chinese. 
-FORMAT: Return RAW JSON only: {"summary": ["point 1", "point 2"]}
-
-[TITLE]: ${cleanTitle}
-
-[DATA_BLOCK]:
-${paragraphs.join("\n").substring(0, 15000)}`;
+      // Data-Last Strategy for Gemma-3
+      currentPrompt = `[SYSTEM]: News summary analyst. Output RAW JSON ONLY: {"summary": ["point 1", "point 2"]} in Chinese.\n[TITLE]: ${cleanTitle}\n[DATA]: ${paragraphs.join("\n").substring(0, 40000)}`;
 
       rawAIResponse = await this.callAI(currentPrompt, apiKey);
       const aiJson = JSON.parse(this.cleanJson(rawAIResponse));
 
       const finalData = {
         title: cleanTitle,
-        image_url: finalImg ? `/image/${finalImg.replace(/^https?:\/\//, '')}` : "",
+        image_url: socialImg || firstBodyImg ? `/image/${(socialImg || firstBodyImg).replace(/^https?:\/\//, '')}` : "",
         summary_points: aiJson.summary || [],
         paragraphs: paragraphs
       };
@@ -205,12 +198,12 @@ ${paragraphs.join("\n").substring(0, 15000)}`;
     <body class="bg-slate-50 min-h-screen font-sans">
       <header class="sticky top-0 z-50 bg-white/95 backdrop-blur-md border-b p-4 flex justify-between items-center shadow-sm">
         <h1 class="font-black text-xl text-slate-900 tracking-tighter uppercase">SmartNews</h1>
-        <button onclick="if(confirm('Clear read history?')){localStorage.clear();location.reload();}" class="text-[9px] font-bold text-slate-400 border px-2 py-1 rounded hover:bg-slate-50 uppercase">Reset</button>
+        <button onclick="if(confirm('Clear?')){localStorage.clear();location.reload();}" class="text-[9px] font-bold text-slate-400 border px-2 py-1 rounded hover:bg-slate-50 uppercase">Reset</button>
       </header>
       <main id="feed" class="max-w-md mx-auto divide-y bg-white">
         ${news.map(i => `
-        <a href="${i.link}" data-id="${btoa(i.link)}" class="news-card flex gap-4 p-5 hover:bg-slate-50 transition-all duration-300">
-          <div class="w-24 h-16 shrink-0 rounded overflow-hidden bg-slate-100">${i.image ? `<img src="${i.image}" class="w-full h-full object-cover" loading="lazy">` : ''}</div>
+        <a href="${i.link}" data-id="${btoa(i.link)}" class="news-card flex gap-4 p-5 hover:bg-slate-50 transition-all">
+          <div class="w-24 h-16 shrink-0 rounded overflow-hidden bg-slate-100">${i.image ? `<img src="${i.image}" class="w-full h-full object-cover">` : ''}</div>
           <div class="flex flex-col justify-between py-0.5">
             <h2 class="text-xs font-bold leading-snug text-slate-800 line-clamp-2">${i.title}</h2>
             <div class="flex items-center gap-2 mt-2">
@@ -221,13 +214,9 @@ ${paragraphs.join("\n").substring(0, 15000)}`;
         </a>`).join('')}
       </main>
       <script>
-        const syncReadStatus = () => {
-          document.querySelectorAll('.news-card').forEach(card => {
-            if (localStorage.getItem('read_' + card.dataset.id)) card.classList.add('is-read');
-          });
-        };
-        syncReadStatus();
-        window.addEventListener('pageshow', (e) => { if (e.persisted) syncReadStatus(); });
+        const syncStatus = () => document.querySelectorAll('.news-card').forEach(c => localStorage.getItem('read_'+c.dataset.id) && c.classList.add('is-read'));
+        syncStatus();
+        window.addEventListener('pageshow', (e) => e.persisted && syncStatus());
       </script>
     </body></html>`;
   },
@@ -239,20 +228,18 @@ ${paragraphs.join("\n").substring(0, 15000)}`;
       ${data.image_url ? `<img src="${data.image_url}" class="w-full aspect-video object-cover">` : ''}
       <div class="p-6">
         <h1 class="text-2xl font-black mb-6 leading-tight text-slate-900">${data.title}</h1>
-        <div class="bg-red-50 border-l-4 border-red-600 p-5 mb-8 rounded-r-xl shadow-sm">
-          <ul class="space-y-2 text-sm font-medium text-red-900 list-disc list-inside">
+        <div class="bg-red-50 border-l-4 border-red-600 p-5 mb-8 rounded-r-xl shadow-sm text-sm font-medium text-red-900">
+          <ul class="space-y-2 list-disc list-inside">
             ${data.summary_points.map(p => `<li>${p}</li>`).join('')}
           </ul>
         </div>
         <div class="space-y-6 text-slate-800 leading-relaxed text-lg">${data.paragraphs.map(p => `<p>${p}</p>`).join('')}</div>
       </div>
-      <footer class="p-10 border-t mt-10 text-center bg-slate-50">
-        <a href="/" class="bg-black text-white px-10 py-4 rounded-full text-[10px] font-black tracking-widest uppercase hover:bg-slate-800 transition-colors shadow-lg">← Back to Feed</a>
-      </footer>
+      <footer class="p-10 border-t mt-10 text-center"><a href="/" class="bg-black text-white px-10 py-4 rounded-full text-[10px] font-black tracking-widest uppercase shadow-lg">← Back to Feed</a></footer>
     </div>
     <script>
       const articleId = btoa(window.location.pathname);
-      setTimeout(() => { localStorage.setItem('read_' + articleId, Date.now()); }, 1000);
+      setTimeout(() => localStorage.setItem('read_' + articleId, Date.now()), 1000);
     </script>
     </body></html>`;
   },
@@ -264,14 +251,8 @@ ${paragraphs.join("\n").substring(0, 15000)}`;
     <body class="bg-slate-950 text-slate-300 p-6 font-mono text-[10px] whitespace-pre-wrap break-all">
       <div class="max-w-4xl mx-auto space-y-6">
         <h1 class="text-red-500 text-lg font-black uppercase italic tracking-tighter">EXCEPTION // ${err.message}</h1>
-        <div class="space-y-2">
-          <h2 class="text-blue-500 font-bold uppercase tracking-widest">[Original Prompt]</h2>
-          <div class="bg-slate-900 p-4 rounded border border-slate-800 select-all">${escape(prompt) || 'NONE'}</div>
-        </div>
-        <div class="space-y-2">
-          <h2 class="text-green-500 font-bold uppercase tracking-widest">[Raw AI Response]</h2>
-          <div class="bg-slate-900 p-4 rounded border border-slate-800 select-all">${escape(response) || 'NONE'}</div>
-        </div>
+        <div class="space-y-2"><h2 class="text-blue-500 font-bold uppercase tracking-widest">[Original Prompt]</h2><div class="bg-slate-900 p-4 rounded border border-slate-800 select-all">${escape(prompt) || 'NONE'}</div></div>
+        <div class="space-y-2"><h2 class="text-green-500 font-bold uppercase tracking-widest">[Raw AI Response]</h2><div class="bg-slate-900 p-4 rounded border border-slate-800 select-all">${escape(response) || 'NONE'}</div></div>
         <a href="/" class="inline-block bg-slate-800 text-white px-8 py-3 rounded-full font-black uppercase text-[10px] tracking-widest hover:bg-slate-700">Return</a>
       </div>
     </body></html>`, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
