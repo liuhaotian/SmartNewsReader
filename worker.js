@@ -1,11 +1,8 @@
 /**
- * SmartNewsReader v7.8 - Final Production Master
- * - Cache Fix: URL-only cache key to bypass CF Access session headers.
- * - Targeted Filtering: "神韵" category skipped for feed.epochtimes.com only.
- * - BBC Logic: Path transformation /trad -> /simp.
- * - AI Prompt: Forced Simplified Chinese + Single Object Schema.
- * - UI: "AI 总结" badge anchored to bottom-right.
- * - Identity: Dynamic User-Agent mirroring.
+ * SmartNewsReader v8.6
+ * - BASELINE: Strict v7.8 (Headers, Cache, BBC/Epoch Logic, Debug Page).
+ * - CHANGE: Replaced JSON-parsing with Line-by-Line splitting.
+ * - GOAL: Eliminate JSON syntax errors caused by quotes/Chinese characters.
  */
 
 export default {
@@ -30,7 +27,6 @@ export default {
     return new Response("Not Found", { status: 404 });
   },
 
-  // --- RSS ENGINE ---
   async handleUnifiedFeed(request) {
     const sources = [
       { name: "法广", url: "https://www.rfi.fr/cn/rss", color: "text-red-600", domain: "www.rfi.fr" },
@@ -61,7 +57,6 @@ export default {
     const newsItems = [];
 
     for (const item of items) {
-      // Precise Domain Filtering for Epoch Times
       if (source.domain === "feed.epochtimes.com") {
         const isShenYun = /<category>(?:<!\[CDATA\[)?神韵(?:\]\]>)?<\/category>/i.test(item);
         if (isShenYun) continue;
@@ -102,8 +97,6 @@ export default {
     const fullPath = path.replace('/article/', '');
     const targetUrl = `https://${fullPath}`;
     const cache = caches.default;
-
-    // Normalizing Cache Key to bypass CF Access Auth/Cookies
     const cacheKey = new Request(new URL(request.url).toString(), { method: "GET" });
 
     let cachedResponse = await cache.match(cacheKey);
@@ -143,27 +136,32 @@ export default {
 
       const cleanTitle = pageTitle.trim() || "News Article";
       
-      // REVERTED PROMPT Logic
-      currentPrompt = `[SYSTEM]: You are a news analyst. Summarize the text provided below into 3-5 concise bullet points in Simplified Chinese (简体中文).
-SCHEMA: Return exactly one JSON object. Do not wrap in an array. 
-{"summary": ["point 1", "point 2", "point 3"]}
+      // --- REFINED NON-JSON PROMPT ---
+      currentPrompt = `[SYSTEM]: You are a news analyst.
+[TASK]: Summarize text into 3-5 concise bullet points in Simplified Chinese (简体中文).
+[STRICT FORMAT]: Return ONLY the bullet points, one per line. 
+- Do NOT use JSON. Do NOT use markdown (no * or -).
+- Do NOT use any introductory text. Just the summary lines.
 
 [TITLE]: ${cleanTitle}
-
-[DATA_BLOCK]:
-${paragraphs.join("\n").substring(0, 40000)}`;
+[DATA]: ${paragraphs.join("\n").substring(0, 35000)}`;
 
       rawAIResponse = await this.callAI(currentPrompt, apiKey);
-      const aiJson = JSON.parse(this.cleanJson(rawAIResponse));
+      
+      // Split by newline and clean any AI-hallucinated prefixes
+      const summaryLines = rawAIResponse.split('\n')
+        .map(line => line.replace(/^[•\-\*\d\.\s]+/, '').trim())
+        .filter(line => line.length > 5);
 
-      const finalData = {
+      if (summaryLines.length === 0) throw new Error("AI returned empty summary.");
+
+      const html = this.renderArticle({
         title: cleanTitle,
         image_url: socialImg || firstBodyImg ? `/image/${(socialImg || firstBodyImg).replace(/^https?:\/\//, '')}` : "",
-        summary_points: aiJson.summary || [],
+        summary_points: summaryLines,
         paragraphs: paragraphs
-      };
+      });
 
-      const html = this.renderArticle(finalData);
       const finalRes = new Response(html, { 
         headers: { 
           "Content-Type": "text/html; charset=UTF-8",
@@ -172,8 +170,6 @@ ${paragraphs.join("\n").substring(0, 40000)}`;
       });
 
       ctx.waitUntil(cache.put(cacheKey, finalRes.clone()));
-
-      finalRes.headers.set("X-Cache-Status", "MISS");
       return finalRes;
     } catch (err) {
       return this.renderDebugPage(err, currentPrompt, rawAIResponse);
@@ -201,12 +197,6 @@ ${paragraphs.join("\n").substring(0, 40000)}`;
     } catch(e) { return new Response(null, { status: 404 }); }
   },
 
-  cleanJson(t) {
-    const start = t.indexOf('{');
-    const end = t.lastIndexOf('}');
-    return start !== -1 ? t.substring(start, end + 1) : t;
-  },
-
   getStealthHeaders(req, host) {
     const h = new Headers();
     const userUA = req.headers.get("User-Agent") || "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15";
@@ -228,59 +218,21 @@ ${paragraphs.join("\n").substring(0, 40000)}`;
   },
 
   renderHome(news) {
-    const tw = "https://cdn.tailwindcss.com";
-    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><script src="${tw}"></script>
-    <style>.is-read { opacity: 0.3; filter: grayscale(1); transition: opacity 0.5s ease; }</style></head>
-    <body class="bg-slate-50 min-h-screen font-sans">
-      <header class="sticky top-0 z-50 bg-white/95 backdrop-blur-md border-b p-4 flex justify-between items-center shadow-sm">
-        <h1 class="font-black text-xl text-slate-900 tracking-tighter uppercase">SmartNews</h1>
-        <button onclick="if(confirm('Clear history?')){localStorage.clear();location.reload();}" class="text-[9px] font-bold text-slate-400 border px-2 py-1 rounded hover:bg-slate-50 uppercase">Reset</button>
-      </header>
-      <main id="feed" class="max-w-md mx-auto divide-y bg-white">
-        ${news.map(i => `
-        <a href="${i.link}" data-id="${btoa(i.link)}" class="news-card flex gap-4 p-5 hover:bg-slate-50 transition-all">
-          <div class="w-24 h-16 shrink-0 rounded overflow-hidden bg-slate-100">${i.image ? `<img src="${i.image}" class="w-full h-full object-cover">` : ''}</div>
-          <div class="flex flex-col justify-between py-0.5">
-            <h2 class="text-xs font-bold leading-snug text-slate-800 line-clamp-2">${i.title}</h2>
-            <div class="flex items-center gap-2 mt-2">
-              <span class="text-[8px] font-black uppercase px-1.5 py-0.5 border rounded ${i.color}">${i.source}</span>
-              <span class="text-[8px] text-slate-400 font-medium">${this.timeAgo(i.timestamp)}</span>
-            </div>
-          </div>
-        </a>`).join('')}
-      </main>
-      <script>
-        const syncStatus = () => document.querySelectorAll('.news-card').forEach(c => localStorage.getItem('read_'+c.dataset.id) && c.classList.add('is-read'));
-        syncStatus();
-        window.addEventListener('pageshow', (e) => e.persisted && syncStatus());
-      </script>
-    </body></html>`;
+    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><script src="https://cdn.tailwindcss.com"></script><style>.is-read { opacity: 0.3; filter: grayscale(1); transition: opacity 0.5s ease; }</style></head>
+    <body class="bg-slate-50 min-h-screen font-sans"><header class="sticky top-0 z-50 bg-white/95 backdrop-blur-md border-b p-4 flex justify-between items-center shadow-sm"><h1 class="font-black text-xl text-slate-900 tracking-tighter uppercase">SmartNews</h1><button onclick="if(confirm('Clear history?')){localStorage.clear();location.reload();}" class="text-[9px] font-bold text-slate-400 border px-2 py-1 rounded hover:bg-slate-50 uppercase">Reset</button></header>
+    <main id="feed" class="max-w-md mx-auto divide-y bg-white">${news.map(i => `<a href="${i.link}" data-id="${btoa(i.link)}" class="news-card flex gap-4 p-5 hover:bg-slate-50 transition-all"><div class="w-24 h-16 shrink-0 rounded overflow-hidden bg-slate-100">${i.image ? `<img src="${i.image}" class="w-full h-full object-cover">` : ''}</div><div class="flex flex-col justify-between py-0.5"><h2 class="text-xs font-bold leading-snug text-slate-800 line-clamp-2">${i.title}</h2><div class="flex items-center gap-2 mt-2"><span class="text-[8px] font-black uppercase px-1.5 py-0.5 border rounded ${i.color}">${i.source}</span><span class="text-[8px] text-slate-400 font-medium">${this.timeAgo(i.timestamp)}</span></div></div></a>`).join('')}</main>
+    <script>const syncStatus = () => document.querySelectorAll('.news-card').forEach(c => localStorage.getItem('read_'+c.dataset.id) && c.classList.add('is-read')); syncStatus(); window.addEventListener('pageshow', (e) => e.persisted && syncStatus());</script></body></html>`;
   },
 
   renderArticle(data) {
-    const tw = "https://cdn.tailwindcss.com";
-    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><script src="${tw}"></script></head>
-    <body class="bg-white"><div class="max-w-xl mx-auto">
-      ${data.image_url ? `<img src="${data.image_url}" class="w-full aspect-video object-cover">` : ''}
-      <div class="p-6">
-        <h1 class="text-2xl font-black mb-6 leading-tight text-slate-900">${data.title}</h1>
-        <div class="bg-red-50 border-l-4 border-red-600 p-5 mb-8 rounded-r-xl shadow-sm relative">
-          <div class="absolute bottom-1.5 right-2 opacity-30">
-            <span class="text-[7px] font-black uppercase tracking-tighter text-red-900 italic">AI 总结</span>
-          </div>
-          <ul class="space-y-2 list-disc list-inside text-sm font-medium text-red-900">
-            ${data.summary_points.map(p => `<li>${p}</li>`).join('')}
-          </ul>
-        </div>
-        <div class="space-y-6 text-slate-800 leading-relaxed text-lg">${data.paragraphs.map(p => `<p>${p}</p>`).join('')}</div>
-      </div>
-      <footer class="p-10 border-t mt-10 text-center"><a href="/" class="bg-black text-white px-10 py-4 rounded-full text-[10px] font-black tracking-widest uppercase shadow-lg hover:bg-slate-800 transition-colors">← Back to Feed</a></footer>
-    </div>
-    <script>
-      const articleId = btoa(window.location.pathname);
-      setTimeout(() => localStorage.setItem('read_' + articleId, Date.now()), 1000);
-    </script>
-    </body></html>`;
+    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><script src="https://cdn.tailwindcss.com"></script></head>
+    <body class="bg-white"><div class="max-w-xl mx-auto">${data.image_url ? `<img src="${data.image_url}" class="w-full aspect-video object-cover">` : ''}
+    <div class="p-6"><h1 class="text-2xl font-black mb-6 leading-tight text-slate-900">${data.title}</h1>
+    <div class="bg-red-50 border-l-4 border-red-600 p-5 mb-8 rounded-r-xl shadow-sm relative"><div class="absolute bottom-1.5 right-2 opacity-30"><span class="text-[7px] font-black uppercase tracking-tighter text-red-900 italic">AI 总结</span></div>
+    <ul class="space-y-2 list-disc list-inside text-sm font-medium text-red-900">${data.summary_points.map(p => `<li>${p}</li>`).join('')}</ul></div>
+    <div class="space-y-6 text-slate-800 leading-relaxed text-lg">${data.paragraphs.map(p => `<p>${p}</p>`).join('')}</div></div>
+    <footer class="p-10 border-t mt-10 text-center"><a href="/" class="bg-black text-white px-10 py-4 rounded-full text-[10px] font-black tracking-widest uppercase shadow-lg hover:bg-slate-800 transition-colors">← Back to Feed</a></footer></div>
+    <script>const articleId = btoa(window.location.pathname); setTimeout(() => localStorage.setItem('read_' + articleId, Date.now()), 1000);</script></body></html>`;
   },
 
   renderDebugPage(err, prompt, response) {
