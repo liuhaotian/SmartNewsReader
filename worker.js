@@ -1,8 +1,9 @@
 /**
- * SmartNewsReader v9.0.4
- * - BASELINE: Strict v8.9.8 (Identity, BBC logic, State logic, DebugPage).
- * - KV: AI_SUMMARY integration with 1hr TTL.
- * - KEY: Simplified btoa() tail-slice of the targetUrl for uniqueness.
+ * SmartNewsReader v9.0.5
+ * - BASELINE: Strict v9.0.4 check-in.
+ * - INCREMENTAL: Added handleSummary endpoint for JSON feed integration.
+ * - STRUCTURE: parseRSS -> handleSummary -> handleArticle.
+ * - SYNC: Prompt in handleSummary matches handleArticle exactly.
  */
 
 export default {
@@ -20,6 +21,8 @@ export default {
     if (path.startsWith('/image/')) return await this.handleImageProxy(url, request);
     if (path === "/" || path === "") return await this.handleUnifiedFeed(request);
     
+    // Incremental Router Addition
+    if (path.startsWith('/summary/')) return await this.handleSummary(path, request, apiKey, env, ctx);
     if (path.startsWith('/article/')) {
       return await this.handleArticle(path, request, apiKey, env, ctx);
     }
@@ -93,6 +96,47 @@ export default {
     return newsItems;
   },
 
+  async handleSummary(path, request, apiKey, env, ctx) {
+    const targetUrl = `https://${path.replace('/summary/', '')}`;
+    const b64 = btoa(targetUrl);
+    const kvKey = b64.substring(Math.max(0, b64.length - 64));
+
+    try {
+      const cachedSum = await env.AI_SUMMARY.get(kvKey);
+      if (cachedSum) return new Response(cachedSum, { headers: { "Content-Type": "application/json" } });
+
+      let paragraphs = [], pageTitle = "";
+      const res = await fetch(targetUrl, { headers: this.getStealthHeaders(request, new URL(targetUrl).hostname) });
+      await new HTMLRewriter()
+        .on("title", { text(t) { pageTitle += t.text; } })
+        .on("p", { text(t) { if (t.text.trim().length > 15) paragraphs.push(t.text.trim()); } })
+        .transform(res).arrayBuffer();
+
+      const cleanTitle = pageTitle.trim() || "News Article";
+
+      // Synchronized Strict Baseline Prompt
+      const currentPrompt = `[SYSTEM]: You are a news analyst.
+[TASK]: Summarize text into 3-5 concise bullet points in Simplified Chinese (简体中文).
+[STRICT FORMAT]: Return ONLY the bullet points, one per line. 
+- Do NOT use JSON. Do NOT use markdown (no * or -).
+- Do NOT use any introductory text. Just the summary lines.
+
+[TITLE]: ${cleanTitle}
+[DATA]: ${paragraphs.join("\n").substring(0, 35000)}`;
+
+      const rawAIResponse = await this.callAI(currentPrompt, apiKey);
+      const summaryLines = rawAIResponse.split('\n')
+        .map(l => l.replace(/^[•\-\*\d\.\s]+/, '').trim())
+        .filter(l => l.length > 5);
+      
+      const jsonStr = JSON.stringify(summaryLines);
+      ctx.waitUntil(env.AI_SUMMARY.put(kvKey, jsonStr, { expirationTtl: 3600 }));
+      return new Response(jsonStr, { headers: { "Content-Type": "application/json" } });
+    } catch (e) {
+      return new Response(JSON.stringify({ error: e.message }), { status: 500 });
+    }
+  },
+
   async handleArticle(path, request, apiKey, env, ctx) {
     const fullPath = path.replace('/article/', '');
     const targetUrl = `https://${fullPath}`;
@@ -136,7 +180,6 @@ export default {
 
       const cleanTitle = pageTitle.trim() || "News Article";
       
-      // KEY LOGIC: Use last 64 chars of B64 URL to differentiate articles with same prefix
       const b64 = btoa(targetUrl);
       const kvKey = b64.substring(Math.max(0, b64.length - 64));
 
