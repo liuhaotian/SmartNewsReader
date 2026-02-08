@@ -1,8 +1,8 @@
 /**
- * SmartNewsReader v9.1.3
- * - DEBUG: handleSummary now supports renderDebugPage on failure.
- * - CORE: Shared _getArticleData logic with debug object return.
- * - BASELINE: Preserved all original formatting and relative positions.
+ * SmartNewsReader v10.5
+ * - UI: Compact list-style summary matching article typography.
+ * - LOGIC: 1s "Read" timer starts ONLY after summary content is fully loaded.
+ * - STYLE: Selective opacity keeps summary clear even when header is greyed out.
  */
 
 export default {
@@ -101,7 +101,6 @@ export default {
       const data = await this._getArticleData(targetUrl, request, apiKey, env, ctx);
       return new Response(JSON.stringify(data.summary_points), { headers: { "Content-Type": "application/json" } });
     } catch (e) {
-      // Allow JSON endpoint to return HTML debug page if it fails
       return this.renderDebugPage(e, debugInfo.prompt, debugInfo.raw);
     }
   },
@@ -182,7 +181,7 @@ export default {
     } else {
       currentPrompt = `[SYSTEM]: You are a news analyst.
 [TASK]: Summarize text into 3-5 concise bullet points in Simplified Chinese (简体中文).
-[STRICT FORMAT]: Return ONLY the bullet points, one per line. 
+[STRICT FORMAT]: Return ONLY the bullet points, one per line. 
 - Do NOT use JSON. Do NOT use markdown (no * or -).
 - Do NOT use any introductory text. Just the summary lines.
 
@@ -253,12 +252,14 @@ export default {
     return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="智能新闻">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
     <title>智能新闻</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-      .is-read { opacity: 0.3; filter: grayscale(1); transition: opacity 0.5s ease; }
+      .is-read .card-header { opacity: 0.3; filter: grayscale(1); }
+      .accordion-content { max-height: 0; overflow: hidden; transition: max-height 0.3s ease-out; }
+      .expanded .accordion-content { max-height: 600px; }
+      .expanded .card-chevron { transform: rotate(180deg); }
       header { padding-top: env(safe-area-inset-top, 0px); }
     </style></head>
     <body class="bg-slate-50 min-h-screen font-sans">
@@ -268,15 +269,82 @@ export default {
         <button onclick="if(confirm('Clear history?')){localStorage.clear();location.reload();}" class="text-[9px] font-bold text-slate-400 border px-2 py-1 rounded hover:bg-slate-50 uppercase">Reset</button>
       </div>
     </header>
-    <main id="feed" class="max-w-md mx-auto divide-y bg-white">${news.map(i => `<a href="${i.link}" data-id="${btoa(i.link)}" class="news-card flex gap-4 p-5 hover:bg-slate-50 transition-all"><div class="w-24 h-16 shrink-0 rounded overflow-hidden bg-slate-100">${i.image ? `<img src="${i.image}" class="w-full h-full object-cover">` : ''}</div><div class="flex flex-col justify-between py-0.5"><h2 class="text-xs font-bold leading-snug text-slate-800 line-clamp-2">${i.title}</h2><div class="flex items-center gap-2 mt-2"><span class="text-[8px] font-black uppercase px-1.5 py-0.5 border rounded ${i.color}">${i.source}</span><span class="text-[8px] text-slate-400 font-medium">${this.timeAgo(i.timestamp)}</span></div></div></a>`).join('')}</main>
-    <script>const syncStatus = () => document.querySelectorAll('.news-card').forEach(c => localStorage.getItem('read_'+c.dataset.id) && c.classList.add('is-read')); syncStatus(); window.addEventListener('pageshow', (e) => e.persisted && syncStatus());</script></body></html>`;
+    <main id="feed" class="max-w-md mx-auto divide-y bg-white">${news.map(i => `
+      <div class="news-card border-b last:border-0" data-id="${btoa(i.link)}" data-url="${i.link}">
+        <div class="flex gap-4 p-5 cursor-pointer hover:bg-slate-50 transition-all card-header">
+          <div class="w-24 h-16 shrink-0 rounded overflow-hidden bg-slate-100">${i.image ? `<img src="${i.image}" class="w-full h-full object-cover">` : ''}</div>
+          <div class="flex flex-col justify-between py-0.5 flex-grow">
+            <h2 class="text-xs font-bold leading-snug text-slate-800 line-clamp-2">${i.title}</h2>
+            <div class="flex items-center justify-between mt-2">
+              <div class="flex items-center gap-2">
+                <span class="text-[8px] font-black uppercase px-1.5 py-0.5 border rounded ${i.color}">${i.source}</span>
+                <span class="text-[8px] text-slate-400 font-medium">${this.timeAgo(i.timestamp)}</span>
+              </div>
+              <svg class="w-3 h-3 text-slate-300 card-chevron transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M19 9l-7 7-7-7"></path></svg>
+            </div>
+          </div>
+        </div>
+        <div class="accordion-content">
+          <a href="${i.link}" class="block bg-red-50 border-l-4 border-red-600 p-5 pt-4 pb-10 relative mb-4 mx-4 rounded-r-xl shadow-sm active:bg-red-100/50 transition-colors">
+            <ul class="summary-target space-y-2 list-disc list-inside text-[13px] leading-relaxed text-red-900 font-medium">
+              <div class="flex justify-center p-2"><div class="animate-pulse flex space-x-1"><div class="h-1 w-1 bg-red-300 rounded-full"></div><div class="h-1 w-1 bg-red-300 rounded-full"></div><div class="h-1 w-1 bg-red-300 rounded-full"></div></div></div>
+            </ul>
+            <div class="absolute bottom-2 right-3 opacity-30"><span class="text-[7px] font-black uppercase tracking-tighter text-red-900 italic uppercase">AI 总结</span></div>
+          </a>
+        </div>
+      </div>`).join('')}</main>
+    <script>
+      const syncStatus = () => document.querySelectorAll('.news-card').forEach(c => localStorage.getItem('read_'+c.dataset.id) && c.classList.add('is-read'));
+      syncStatus();
+      window.addEventListener('pageshow', (e) => e.persisted && syncStatus());
+
+      document.querySelectorAll('.card-header').forEach(header => {
+        let readTimer;
+        const startTimer = (card) => {
+          clearTimeout(readTimer);
+          readTimer = setTimeout(() => {
+            if (card.classList.contains('expanded')) {
+              localStorage.setItem('read_' + card.dataset.id, Date.now());
+              card.classList.add('is-read');
+            }
+          }, 1000);
+        };
+
+        header.addEventListener('click', async () => {
+          const card = header.closest('.news-card');
+          const isExpanded = card.classList.toggle('expanded');
+          const target = card.querySelector('.summary-target');
+          const url = card.dataset.url;
+          
+          if (isExpanded) {
+            if (card.dataset.loaded) {
+              startTimer(card);
+            } else {
+              try {
+                const res = await fetch('/summary/' + url.replace('/article/', ''));
+                if (!res.ok) throw new Error();
+                const points = await res.json();
+                target.innerHTML = points.map(p => \`<li>\${p}</li>\`).join('');
+                card.dataset.loaded = "true";
+                // Only start the 1s count AFTER the content is rendered
+                startTimer(card);
+              } catch(err) {
+                target.innerHTML = \`<li class="list-none text-center p-2"><p class="text-[10px] text-slate-500 mb-1 font-bold uppercase">Summary failed</p><span class="text-xs text-blue-600 underline">Read full article</span></li>\`;
+              }
+            }
+          } else {
+            clearTimeout(readTimer);
+          }
+        });
+      });
+    </script></body></html>`;
   },
 
   renderArticle(data) {
     return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><script src="https://cdn.tailwindcss.com"></script><style>body { padding-top: env(safe-area-inset-top, 0px); }</style></head>
     <body class="bg-white"><div class="max-w-xl mx-auto">${data.image_url ? `<img src="${data.image_url}" class="w-full aspect-video object-cover">` : ''}
     <div class="p-6"><h1 class="text-2xl font-black mb-6 leading-tight text-slate-900">${data.title}</h1>
-    <div class="bg-red-50 border-l-4 border-red-600 p-5 mb-8 rounded-r-xl shadow-sm relative"><div class="absolute bottom-1.5 right-2 opacity-30"><span class="text-[7px] font-black uppercase tracking-tighter text-red-900 italic">AI 总结</span></div>
+    <div class="bg-red-50 border-l-4 border-red-600 p-5 mb-8 rounded-r-xl shadow-sm relative"><div class="absolute bottom-1.5 right-2 opacity-30"><span class="text-[7px] font-black uppercase tracking-tighter text-red-900 italic uppercase">AI 总结</span></div>
     <ul class="space-y-2 list-disc list-inside text-sm font-medium text-red-900">${data.summary_points.map(p => `<li>${p}</li>`).join('')}</ul></div>
     <div class="space-y-6 text-slate-800 leading-relaxed text-lg">${data.paragraphs.map(p => `<p>${p}</p>`).join('')}</div></div>
     <footer class="p-10 border-t mt-10 text-center"><a href="/" class="bg-black text-white px-10 py-4 rounded-full text-[10px] font-black tracking-widest uppercase shadow-lg hover:bg-slate-800 transition-colors">← Back to Feed</a></footer></div>
