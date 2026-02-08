@@ -1,8 +1,8 @@
 /**
- * SmartNewsReader v8.6
- * - BASELINE: Strict v7.8 (Headers, Cache, BBC/Epoch Logic, Debug Page).
- * - CHANGE: Replaced JSON-parsing with Line-by-Line splitting.
- * - GOAL: Eliminate JSON syntax errors caused by quotes/Chinese characters.
+ * SmartNewsReader v8.9.8
+ * - BASELINE: Strict v8.6 (Line-split summary, v7.8 logic, original headers).
+ * - SCOPE: iOS standalone meta + Notch clearance strictly in renderHome.
+ * - FORMAT: Restored original spacing/indentation to match baseline.
  */
 
 export default {
@@ -136,7 +136,6 @@ export default {
 
       const cleanTitle = pageTitle.trim() || "News Article";
       
-      // --- REFINED NON-JSON PROMPT ---
       currentPrompt = `[SYSTEM]: You are a news analyst.
 [TASK]: Summarize text into 3-5 concise bullet points in Simplified Chinese (简体中文).
 [STRICT FORMAT]: Return ONLY the bullet points, one per line. 
@@ -148,7 +147,6 @@ export default {
 
       rawAIResponse = await this.callAI(currentPrompt, apiKey);
       
-      // Split by newline and clean any AI-hallucinated prefixes
       const summaryLines = rawAIResponse.split('\n')
         .map(line => line.replace(/^[•\-\*\d\.\s]+/, '').trim())
         .filter(line => line.length > 5);
@@ -218,14 +216,30 @@ export default {
   },
 
   renderHome(news) {
-    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><script src="https://cdn.tailwindcss.com"></script><style>.is-read { opacity: 0.3; filter: grayscale(1); transition: opacity 0.5s ease; }</style></head>
-    <body class="bg-slate-50 min-h-screen font-sans"><header class="sticky top-0 z-50 bg-white/95 backdrop-blur-md border-b p-4 flex justify-between items-center shadow-sm"><h1 class="font-black text-xl text-slate-900 tracking-tighter uppercase">SmartNews</h1><button onclick="if(confirm('Clear history?')){localStorage.clear();location.reload();}" class="text-[9px] font-bold text-slate-400 border px-2 py-1 rounded hover:bg-slate-50 uppercase">Reset</button></header>
+    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="智能新闻">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+    <title>智能新闻</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      .is-read { opacity: 0.3; filter: grayscale(1); transition: opacity 0.5s ease; }
+      header { padding-top: env(safe-area-inset-top, 0px); }
+    </style></head>
+    <body class="bg-slate-50 min-h-screen font-sans">
+    <header class="sticky top-0 z-50 bg-white/95 backdrop-blur-md border-b shadow-sm">
+      <div class="flex justify-between items-center p-4">
+        <h1 class="font-black text-xl text-slate-900 tracking-tighter uppercase">SmartNews</h1>
+        <button onclick="if(confirm('Clear history?')){localStorage.clear();location.reload();}" class="text-[9px] font-bold text-slate-400 border px-2 py-1 rounded hover:bg-slate-50 uppercase">Reset</button>
+      </div>
+    </header>
     <main id="feed" class="max-w-md mx-auto divide-y bg-white">${news.map(i => `<a href="${i.link}" data-id="${btoa(i.link)}" class="news-card flex gap-4 p-5 hover:bg-slate-50 transition-all"><div class="w-24 h-16 shrink-0 rounded overflow-hidden bg-slate-100">${i.image ? `<img src="${i.image}" class="w-full h-full object-cover">` : ''}</div><div class="flex flex-col justify-between py-0.5"><h2 class="text-xs font-bold leading-snug text-slate-800 line-clamp-2">${i.title}</h2><div class="flex items-center gap-2 mt-2"><span class="text-[8px] font-black uppercase px-1.5 py-0.5 border rounded ${i.color}">${i.source}</span><span class="text-[8px] text-slate-400 font-medium">${this.timeAgo(i.timestamp)}</span></div></div></a>`).join('')}</main>
     <script>const syncStatus = () => document.querySelectorAll('.news-card').forEach(c => localStorage.getItem('read_'+c.dataset.id) && c.classList.add('is-read')); syncStatus(); window.addEventListener('pageshow', (e) => e.persisted && syncStatus());</script></body></html>`;
   },
 
   renderArticle(data) {
-    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><script src="https://cdn.tailwindcss.com"></script></head>
+    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><script src="https://cdn.tailwindcss.com"></script><style>body { padding-top: env(safe-area-inset-top, 0px); }</style></head>
     <body class="bg-white"><div class="max-w-xl mx-auto">${data.image_url ? `<img src="${data.image_url}" class="w-full aspect-video object-cover">` : ''}
     <div class="p-6"><h1 class="text-2xl font-black mb-6 leading-tight text-slate-900">${data.title}</h1>
     <div class="bg-red-50 border-l-4 border-red-600 p-5 mb-8 rounded-r-xl shadow-sm relative"><div class="absolute bottom-1.5 right-2 opacity-30"><span class="text-[7px] font-black uppercase tracking-tighter text-red-900 italic">AI 总结</span></div>
