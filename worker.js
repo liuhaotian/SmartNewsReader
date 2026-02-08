@@ -1,8 +1,8 @@
 /**
- * SmartNewsReader v10.5
- * - UI: Compact list-style summary matching article typography.
- * - LOGIC: 1s "Read" timer starts ONLY after summary content is fully loaded.
- * - STYLE: Selective opacity keeps summary clear even when header is greyed out.
+ * SmartNewsReader v10.7
+ * - BASE: v10.5 Git Source
+ * - UPDATE: KV Summary TTL extended to 14 days (1209600s).
+ * - UPDATE: AI badge absolute-positioned in home view.
  */
 
 export default {
@@ -194,7 +194,8 @@ export default {
         .filter(l => l.length > 5);
 
       if (summaryPoints.length > 0) {
-        ctx.waitUntil(env.AI_SUMMARY.put(kvKey, JSON.stringify(summaryPoints), { expirationTtl: 3600 }));
+        // Updated to 14 days (1209600 seconds)
+        ctx.waitUntil(env.AI_SUMMARY.put(kvKey, JSON.stringify(summaryPoints), { expirationTtl: 1209600 }));
       }
     }
 
@@ -285,11 +286,11 @@ export default {
           </div>
         </div>
         <div class="accordion-content">
-          <a href="${i.link}" class="block bg-red-50 border-l-4 border-red-600 p-5 pt-4 pb-10 relative mb-4 mx-4 rounded-r-xl shadow-sm active:bg-red-100/50 transition-colors">
-            <ul class="summary-target space-y-2 list-disc list-inside text-[13px] leading-relaxed text-red-900 font-medium">
+          <a href="${i.link}" class="block bg-red-50 border-l-4 border-red-600 p-5 pt-4 pb-4 relative mb-4 mx-4 rounded-r-xl shadow-sm active:bg-red-100/50 transition-colors">
+            <ul class="summary-target space-y-2 list-disc list-inside text-[13px] leading-relaxed text-red-900 font-medium pb-2">
               <div class="flex justify-center p-2"><div class="animate-pulse flex space-x-1"><div class="h-1 w-1 bg-red-300 rounded-full"></div><div class="h-1 w-1 bg-red-300 rounded-full"></div><div class="h-1 w-1 bg-red-300 rounded-full"></div></div></div>
             </ul>
-            <div class="absolute bottom-2 right-3 opacity-30"><span class="text-[7px] font-black uppercase tracking-tighter text-red-900 italic uppercase">AI 总结</span></div>
+            <div class="absolute bottom-1.5 right-2 opacity-30"><span class="text-[7px] font-black uppercase tracking-tighter text-red-900 italic">AI 总结</span></div>
           </a>
         </div>
       </div>`).join('')}</main>
@@ -326,7 +327,6 @@ export default {
                 const points = await res.json();
                 target.innerHTML = points.map(p => \`<li>\${p}</li>\`).join('');
                 card.dataset.loaded = "true";
-                // Only start the 1s count AFTER the content is rendered
                 startTimer(card);
               } catch(err) {
                 target.innerHTML = \`<li class="list-none text-center p-2"><p class="text-[10px] text-slate-500 mb-1 font-bold uppercase">Summary failed</p><span class="text-xs text-blue-600 underline">Read full article</span></li>\`;
@@ -344,8 +344,10 @@ export default {
     return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><script src="https://cdn.tailwindcss.com"></script><style>body { padding-top: env(safe-area-inset-top, 0px); }</style></head>
     <body class="bg-white"><div class="max-w-xl mx-auto">${data.image_url ? `<img src="${data.image_url}" class="w-full aspect-video object-cover">` : ''}
     <div class="p-6"><h1 class="text-2xl font-black mb-6 leading-tight text-slate-900">${data.title}</h1>
-    <div class="bg-red-50 border-l-4 border-red-600 p-5 mb-8 rounded-r-xl shadow-sm relative"><div class="absolute bottom-1.5 right-2 opacity-30"><span class="text-[7px] font-black uppercase tracking-tighter text-red-900 italic uppercase">AI 总结</span></div>
-    <ul class="space-y-2 list-disc list-inside text-sm font-medium text-red-900">${data.summary_points.map(p => `<li>${p}</li>`).join('')}</ul></div>
+    <div class="bg-red-50 border-l-4 border-red-600 p-5 mb-8 rounded-r-xl shadow-sm relative">
+      <ul class="space-y-2 list-disc list-inside text-sm font-medium text-red-900 pb-2">${data.summary_points.map(p => `<li>${p}</li>`).join('')}</ul>
+      <div class="absolute bottom-1.5 right-2 opacity-30"><span class="text-[7px] font-black uppercase tracking-tighter text-red-900 italic">AI 总结</span></div>
+    </div>
     <div class="space-y-6 text-slate-800 leading-relaxed text-lg">${data.paragraphs.map(p => `<p>${p}</p>`).join('')}</div></div>
     <footer class="p-10 border-t mt-10 text-center"><a href="/" class="bg-black text-white px-10 py-4 rounded-full text-[10px] font-black tracking-widest uppercase shadow-lg hover:bg-slate-800 transition-colors">← Back to Feed</a></footer></div>
     <script>const articleId = btoa(window.location.pathname); setTimeout(() => localStorage.setItem('read_' + articleId, Date.now()), 1000);</script></body></html>`;
