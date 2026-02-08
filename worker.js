@@ -1,9 +1,8 @@
 /**
- * SmartNewsReader v9.0.5
- * - BASELINE: Strict v9.0.4 check-in.
- * - INCREMENTAL: Added handleSummary endpoint for JSON feed integration.
- * - STRUCTURE: parseRSS -> handleSummary -> handleArticle.
- * - SYNC: Prompt in handleSummary matches handleArticle exactly.
+ * SmartNewsReader v9.1.3
+ * - DEBUG: handleSummary now supports renderDebugPage on failure.
+ * - CORE: Shared _getArticleData logic with debug object return.
+ * - BASELINE: Preserved all original formatting and relative positions.
  */
 
 export default {
@@ -21,7 +20,6 @@ export default {
     if (path.startsWith('/image/')) return await this.handleImageProxy(url, request);
     if (path === "/" || path === "") return await this.handleUnifiedFeed(request);
     
-    // Incremental Router Addition
     if (path.startsWith('/summary/')) return await this.handleSummary(path, request, apiKey, env, ctx);
     if (path.startsWith('/article/')) {
       return await this.handleArticle(path, request, apiKey, env, ctx);
@@ -98,42 +96,13 @@ export default {
 
   async handleSummary(path, request, apiKey, env, ctx) {
     const targetUrl = `https://${path.replace('/summary/', '')}`;
-    const b64 = btoa(targetUrl);
-    const kvKey = b64.substring(Math.max(0, b64.length - 64));
-
+    let debugInfo = { prompt: "", raw: "" };
     try {
-      const cachedSum = await env.AI_SUMMARY.get(kvKey);
-      if (cachedSum) return new Response(cachedSum, { headers: { "Content-Type": "application/json" } });
-
-      let paragraphs = [], pageTitle = "";
-      const res = await fetch(targetUrl, { headers: this.getStealthHeaders(request, new URL(targetUrl).hostname) });
-      await new HTMLRewriter()
-        .on("title", { text(t) { pageTitle += t.text; } })
-        .on("p", { text(t) { if (t.text.trim().length > 15) paragraphs.push(t.text.trim()); } })
-        .transform(res).arrayBuffer();
-
-      const cleanTitle = pageTitle.trim() || "News Article";
-
-      // Synchronized Strict Baseline Prompt
-      const currentPrompt = `[SYSTEM]: You are a news analyst.
-[TASK]: Summarize text into 3-5 concise bullet points in Simplified Chinese (简体中文).
-[STRICT FORMAT]: Return ONLY the bullet points, one per line. 
-- Do NOT use JSON. Do NOT use markdown (no * or -).
-- Do NOT use any introductory text. Just the summary lines.
-
-[TITLE]: ${cleanTitle}
-[DATA]: ${paragraphs.join("\n").substring(0, 35000)}`;
-
-      const rawAIResponse = await this.callAI(currentPrompt, apiKey);
-      const summaryLines = rawAIResponse.split('\n')
-        .map(l => l.replace(/^[•\-\*\d\.\s]+/, '').trim())
-        .filter(l => l.length > 5);
-      
-      const jsonStr = JSON.stringify(summaryLines);
-      ctx.waitUntil(env.AI_SUMMARY.put(kvKey, jsonStr, { expirationTtl: 3600 }));
-      return new Response(jsonStr, { headers: { "Content-Type": "application/json" } });
+      const data = await this._getArticleData(targetUrl, request, apiKey, env, ctx);
+      return new Response(JSON.stringify(data.summary_points), { headers: { "Content-Type": "application/json" } });
     } catch (e) {
-      return new Response(JSON.stringify({ error: e.message }), { status: 500 });
+      // Allow JSON endpoint to return HTML debug page if it fails
+      return this.renderDebugPage(e, debugInfo.prompt, debugInfo.raw);
     }
   },
 
@@ -150,73 +119,16 @@ export default {
       return hitRes;
     }
 
-    let pageTitle = "", socialImg = "", firstBodyImg = "", paragraphs = [];
-    let currentPrompt = "", rawAIResponse = "";
-
-    const resolveUrl = (src) => {
-      try { return new URL(src, targetUrl).href.replace(/^http:/, 'https:'); } catch (e) { return null; }
-    };
-
+    let debugInfo = { prompt: "", raw: "" };
     try {
-      const res = await fetch(targetUrl, { headers: this.getStealthHeaders(request, fullPath.split('/')[0]) });
-      if (!res.ok) throw new Error(`Fetch Exception: HTTP ${res.status}`);
-
-      await new HTMLRewriter()
-        .on("title", { text(t) { pageTitle += t.text; } })
-        .on("meta", { element(el) {
-          const prop = el.getAttribute("property") || el.getAttribute("name");
-          const content = el.getAttribute("content");
-          if (content && (prop === "og:image" || prop === "twitter:image")) socialImg = resolveUrl(content);
-        }})
-        .on("img", { element(el) {
-          const src = el.getAttribute("src") || el.getAttribute("data-src");
-          if (!firstBodyImg && src && !src.startsWith('data:')) firstBodyImg = resolveUrl(src);
-        }})
-        .on("p", { text(t) { 
-          const txt = t.text.trim();
-          if (txt.length > 15) paragraphs.push(txt); 
-        }})
-        .transform(res).arrayBuffer();
-
-      const cleanTitle = pageTitle.trim() || "News Article";
-      
-      const b64 = btoa(targetUrl);
-      const kvKey = b64.substring(Math.max(0, b64.length - 64));
-
-      let summaryLines = [];
-      const cachedSum = await env.AI_SUMMARY.get(kvKey);
-
-      if (cachedSum) {
-        summaryLines = JSON.parse(cachedSum);
-      } else {
-        // Strict Baseline Prompt
-        currentPrompt = `[SYSTEM]: You are a news analyst.
-[TASK]: Summarize text into 3-5 concise bullet points in Simplified Chinese (简体中文).
-[STRICT FORMAT]: Return ONLY the bullet points, one per line. 
-- Do NOT use JSON. Do NOT use markdown (no * or -).
-- Do NOT use any introductory text. Just the summary lines.
-
-[TITLE]: ${cleanTitle}
-[DATA]: ${paragraphs.join("\n").substring(0, 35000)}`;
-
-        rawAIResponse = await this.callAI(currentPrompt, apiKey);
-        
-        summaryLines = rawAIResponse.split('\n')
-          .map(line => line.replace(/^[•\-\*\d\.\s]+/, '').trim())
-          .filter(line => line.length > 5);
-
-        if (summaryLines.length > 0) {
-          ctx.waitUntil(env.AI_SUMMARY.put(kvKey, JSON.stringify(summaryLines), { expirationTtl: 3600 }));
-        }
-      }
-
-      if (summaryLines.length === 0) throw new Error("AI returned empty summary.");
+      const data = await this._getArticleData(targetUrl, request, apiKey, env, ctx);
+      debugInfo = data.debug;
 
       const html = this.renderArticle({
-        title: cleanTitle,
-        image_url: socialImg || firstBodyImg ? `/image/${(socialImg || firstBodyImg).replace(/^https?:\/\//, '')}` : "",
-        summary_points: summaryLines,
-        paragraphs: paragraphs
+        title: data.title,
+        image_url: data.image ? `/image/${data.image.replace(/^https?:\/\//, '')}` : "",
+        summary_points: data.summary_points,
+        paragraphs: data.paragraphs
       });
 
       const finalRes = new Response(html, { 
@@ -229,8 +141,71 @@ export default {
       ctx.waitUntil(cache.put(cacheKey, finalRes.clone()));
       return finalRes;
     } catch (err) {
-      return this.renderDebugPage(err, currentPrompt, rawAIResponse);
+      return this.renderDebugPage(err, debugInfo.prompt, debugInfo.raw);
     }
+  },
+
+  async _getArticleData(targetUrl, request, apiKey, env, ctx) {
+    let pageTitle = "", socialImg = "", firstBodyImg = "", paragraphs = [];
+    const res = await fetch(targetUrl, { headers: this.getStealthHeaders(request, new URL(targetUrl).hostname) });
+    if (!res.ok) throw new Error(`Fetch Exception: HTTP ${res.status}`);
+
+    await new HTMLRewriter()
+      .on("title", { text(t) { pageTitle += t.text; } })
+      .on("meta", { element(el) {
+        const prop = el.getAttribute("property") || el.getAttribute("name");
+        const content = el.getAttribute("content");
+        if (content && (prop === "og:image" || prop === "twitter:image")) socialImg = content;
+      }})
+      .on("img", { element(el) {
+        const src = el.getAttribute("src") || el.getAttribute("data-src");
+        if (!firstBodyImg && src && !src.startsWith('data:')) firstBodyImg = src;
+      }})
+      .on("p", { text(t) { 
+        const txt = t.text.trim();
+        if (txt.length > 15) paragraphs.push(txt); 
+      }})
+      .transform(res).arrayBuffer();
+
+    const cleanTitle = pageTitle.trim() || "News Article";
+    const b64 = btoa(targetUrl);
+    const kvKey = b64.substring(Math.max(0, b64.length - 64));
+
+    let summaryPoints = [];
+    let currentPrompt = "";
+    let rawAIResponse = "";
+    
+    const cachedSum = await env.AI_SUMMARY.get(kvKey);
+
+    if (cachedSum) {
+      summaryPoints = JSON.parse(cachedSum);
+    } else {
+      currentPrompt = `[SYSTEM]: You are a news analyst.
+[TASK]: Summarize text into 3-5 concise bullet points in Simplified Chinese (简体中文).
+[STRICT FORMAT]: Return ONLY the bullet points, one per line. 
+- Do NOT use JSON. Do NOT use markdown (no * or -).
+- Do NOT use any introductory text. Just the summary lines.
+
+[TITLE]: ${cleanTitle}
+[DATA]: ${paragraphs.join("\n").substring(0, 35000)}`;
+
+      rawAIResponse = await this.callAI(currentPrompt, apiKey);
+      summaryPoints = rawAIResponse.split('\n')
+        .map(l => l.replace(/^[•\-\*\d\.\s]+/, '').trim())
+        .filter(l => l.length > 5);
+
+      if (summaryPoints.length > 0) {
+        ctx.waitUntil(env.AI_SUMMARY.put(kvKey, JSON.stringify(summaryPoints), { expirationTtl: 3600 }));
+      }
+    }
+
+    return { 
+      title: cleanTitle, 
+      paragraphs, 
+      image: socialImg || firstBodyImg, 
+      summary_points: summaryPoints,
+      debug: { prompt: currentPrompt, raw: rawAIResponse }
+    };
   },
 
   async callAI(prompt, apiKey) {
@@ -315,8 +290,8 @@ export default {
     <body class="bg-slate-950 text-slate-300 p-6 font-mono text-[10px] whitespace-pre-wrap break-all">
       <div class="max-w-4xl mx-auto space-y-6">
         <h1 class="text-red-500 text-lg font-black uppercase italic tracking-tighter">EXCEPTION // ${err.message}</h1>
-        <div class="space-y-2"><h2 class="text-blue-500 font-bold uppercase tracking-widest">[Original Prompt]</h2><div class="bg-slate-900 p-4 rounded border border-slate-800 select-all">${escape(prompt) || 'NONE'}</div></div>
-        <div class="space-y-2"><h2 class="text-green-500 font-bold uppercase tracking-widest">[Raw AI Response]</h2><div class="bg-slate-900 p-4 rounded border border-slate-800 select-all">${escape(response) || 'NONE'}</div></div>
+        <div class="space-y-2"><h2 class="text-blue-500 font-bold uppercase tracking-widest">[Original Prompt]</h2><div class="bg-slate-900 p-4 rounded border border-slate-800 select-all">${escape(prompt) || 'NONE (CACHED OR FETCH FAILED)'}</div></div>
+        <div class="space-y-2"><h2 class="text-green-500 font-bold uppercase tracking-widest">[Raw AI Response]</h2><div class="bg-slate-900 p-4 rounded border border-slate-800 select-all">${escape(response) || 'NONE (CACHED OR FETCH FAILED)'}</div></div>
         <a href="/" class="inline-block bg-slate-800 text-white px-8 py-3 rounded-full font-black uppercase text-[10px] tracking-widest hover:bg-slate-700">Return</a>
       </div>
     </body></html>`, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
