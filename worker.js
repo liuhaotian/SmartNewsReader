@@ -1,8 +1,8 @@
 /**
- * SmartNewsReader v8.9.8
- * - BASELINE: Strict v8.6 (Line-split summary, v7.8 logic, original headers).
- * - SCOPE: iOS standalone meta + Notch clearance strictly in renderHome.
- * - FORMAT: Restored original spacing/indentation to match baseline.
+ * SmartNewsReader v9.0.4
+ * - BASELINE: Strict v8.9.8 (Identity, BBC logic, State logic, DebugPage).
+ * - KV: AI_SUMMARY integration with 1hr TTL.
+ * - KEY: Simplified btoa() tail-slice of the targetUrl for uniqueness.
  */
 
 export default {
@@ -21,7 +21,7 @@ export default {
     if (path === "/" || path === "") return await this.handleUnifiedFeed(request);
     
     if (path.startsWith('/article/')) {
-      return await this.handleArticle(path, request, apiKey, ctx);
+      return await this.handleArticle(path, request, apiKey, env, ctx);
     }
 
     return new Response("Not Found", { status: 404 });
@@ -93,7 +93,7 @@ export default {
     return newsItems;
   },
 
-  async handleArticle(path, request, apiKey, ctx) {
+  async handleArticle(path, request, apiKey, env, ctx) {
     const fullPath = path.replace('/article/', '');
     const targetUrl = `https://${fullPath}`;
     const cache = caches.default;
@@ -136,7 +136,18 @@ export default {
 
       const cleanTitle = pageTitle.trim() || "News Article";
       
-      currentPrompt = `[SYSTEM]: You are a news analyst.
+      // KEY LOGIC: Use last 64 chars of B64 URL to differentiate articles with same prefix
+      const b64 = btoa(targetUrl);
+      const kvKey = b64.substring(Math.max(0, b64.length - 64));
+
+      let summaryLines = [];
+      const cachedSum = await env.AI_SUMMARY.get(kvKey);
+
+      if (cachedSum) {
+        summaryLines = JSON.parse(cachedSum);
+      } else {
+        // Strict Baseline Prompt
+        currentPrompt = `[SYSTEM]: You are a news analyst.
 [TASK]: Summarize text into 3-5 concise bullet points in Simplified Chinese (简体中文).
 [STRICT FORMAT]: Return ONLY the bullet points, one per line. 
 - Do NOT use JSON. Do NOT use markdown (no * or -).
@@ -145,11 +156,16 @@ export default {
 [TITLE]: ${cleanTitle}
 [DATA]: ${paragraphs.join("\n").substring(0, 35000)}`;
 
-      rawAIResponse = await this.callAI(currentPrompt, apiKey);
-      
-      const summaryLines = rawAIResponse.split('\n')
-        .map(line => line.replace(/^[•\-\*\d\.\s]+/, '').trim())
-        .filter(line => line.length > 5);
+        rawAIResponse = await this.callAI(currentPrompt, apiKey);
+        
+        summaryLines = rawAIResponse.split('\n')
+          .map(line => line.replace(/^[•\-\*\d\.\s]+/, '').trim())
+          .filter(line => line.length > 5);
+
+        if (summaryLines.length > 0) {
+          ctx.waitUntil(env.AI_SUMMARY.put(kvKey, JSON.stringify(summaryLines), { expirationTtl: 3600 }));
+        }
+      }
 
       if (summaryLines.length === 0) throw new Error("AI returned empty summary.");
 
