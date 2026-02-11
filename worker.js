@@ -1,8 +1,9 @@
 /**
- * SmartNewsReader v10.7
- * - BASE: v10.5 Git Source
- * - UPDATE: KV Summary TTL extended to 14 days (1209600s).
- * - UPDATE: AI badge absolute-positioned in home view.
+ * SmartNewsReader v10.8
+ * - BASE: v10.7 Git Source
+ * - NEW: /debug/{url} route for inspection.
+ * - REQUIREMENT: Output raw prompt, output full code, preserve v10.5 logic.
+ * - UPDATE: AI Summary indicator "AI 总结".
  */
 
 export default {
@@ -17,6 +18,9 @@ export default {
       return new Response("Secret Error: GEMINI_API_KEY binding required.", { status: 500 });
     }
 
+    // New Debug Route (Target URL follows /debug/)
+    if (path.startsWith('/debug/')) return await this.handleDebug(path, request, apiKey, env, ctx);
+
     if (path.startsWith('/image/')) return await this.handleImageProxy(url, request);
     if (path === "/" || path === "") return await this.handleUnifiedFeed(request);
     
@@ -26,6 +30,39 @@ export default {
     }
 
     return new Response("Not Found", { status: 404 });
+  },
+
+  async handleDebug(path, request, apiKey, env, ctx) {
+    const targetUrl = `https://${path.replace('/debug/', '')}`;
+    const targetHost = new URL(targetUrl).hostname;
+    const stealthHeaders = this.getStealthHeaders(request, targetHost);
+    
+    let rawHtml = "";
+    let respHeaders = {};
+    let error = null;
+    let data = { debug: { prompt: "N/A", raw: "N/A" } };
+
+    try {
+      const res = await fetch(targetUrl, { headers: stealthHeaders });
+      rawHtml = await res.text();
+      for (const [key, value] of res.headers.entries()) {
+        respHeaders[key] = value;
+      }
+      // Attempt extraction to see what the AI sees
+      data = await this._getArticleData(targetUrl, request, apiKey, env, ctx);
+    } catch (e) {
+      error = e;
+    }
+
+    const reqHeadersObj = Object.fromEntries(stealthHeaders.entries());
+
+    return this.renderDebugPage(
+      error || { message: "FETCH SUCCESS" }, 
+      data.debug.prompt, 
+      data.debug.raw, 
+      JSON.stringify({ request: reqHeadersObj, response: respHeaders }, null, 2), 
+      rawHtml
+    );
   },
 
   async handleUnifiedFeed(request) {
@@ -194,7 +231,6 @@ export default {
         .filter(l => l.length > 5);
 
       if (summaryPoints.length > 0) {
-        // Updated to 14 days (1209600 seconds)
         ctx.waitUntil(env.AI_SUMMARY.put(kvKey, JSON.stringify(summaryPoints), { expirationTtl: 1209600 }));
       }
     }
@@ -229,6 +265,7 @@ export default {
     } catch(e) { return new Response(null, { status: 404 }); }
   },
 
+  // v10.5 Git Source logic
   getStealthHeaders(req, host) {
     const h = new Headers();
     const userUA = req.headers.get("User-Agent") || "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15";
@@ -241,6 +278,7 @@ export default {
     return h;
   },
 
+  // v10.5 Git Source logic
   timeAgo(ts) {
     const diff = Math.floor((Date.now() - ts) / 1000);
     if (diff < 60) return "刚刚";
@@ -353,15 +391,35 @@ export default {
     <script>const articleId = btoa(window.location.pathname); setTimeout(() => localStorage.setItem('read_' + articleId, Date.now()), 1000);</script></body></html>`;
   },
 
-  renderDebugPage(err, prompt, response) {
+  // Requirements: Raw Prompt and Headers included in output
+  renderDebugPage(err, prompt, response, headersJson, rawHtml) {
     const tw = "https://cdn.tailwindcss.com";
     const escape = (str) => str?.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     return new Response(`<!DOCTYPE html><html><head><meta charset="UTF-8"><script src="${tw}"></script></head>
     <body class="bg-slate-950 text-slate-300 p-6 font-mono text-[10px] whitespace-pre-wrap break-all">
       <div class="max-w-4xl mx-auto space-y-6">
-        <h1 class="text-red-500 text-lg font-black uppercase italic tracking-tighter">EXCEPTION // ${err.message}</h1>
-        <div class="space-y-2"><h2 class="text-blue-500 font-bold uppercase tracking-widest">[Original Prompt]</h2><div class="bg-slate-900 p-4 rounded border border-slate-800 select-all">${escape(prompt) || 'NONE (CACHED OR FETCH FAILED)'}</div></div>
-        <div class="space-y-2"><h2 class="text-green-500 font-bold uppercase tracking-widest">[Raw AI Response]</h2><div class="bg-slate-900 p-4 rounded border border-slate-800 select-all">${escape(response) || 'NONE (CACHED OR FETCH FAILED)'}</div></div>
+        <h1 class="text-red-500 text-lg font-black uppercase italic tracking-tighter">DIAGNOSTIC // ${err.message}</h1>
+        
+        <div class="space-y-2">
+          <h2 class="text-blue-500 font-bold uppercase tracking-widest">[Header Exchange]</h2>
+          <div class="bg-slate-900 p-4 rounded border border-slate-800 select-all">${escape(headersJson)}</div>
+        </div>
+
+        <div class="space-y-2">
+          <h2 class="text-orange-500 font-bold uppercase tracking-widest">[Original Prompt]</h2>
+          <div class="bg-slate-900 p-4 rounded border border-slate-800 select-all">${escape(prompt) || 'N/A'}</div>
+        </div>
+        
+        <div class="space-y-2">
+          <h2 class="text-green-500 font-bold uppercase tracking-widest">[Raw AI Response]</h2>
+          <div class="bg-slate-900 p-4 rounded border border-slate-800 select-all">${escape(response) || 'N/A'}</div>
+        </div>
+
+        <div class="space-y-2">
+          <h2 class="text-slate-500 font-bold uppercase tracking-widest">[Raw HTML Body]</h2>
+          <div class="bg-slate-900 p-4 rounded border border-slate-800 select-all h-96 overflow-y-auto">${escape(rawHtml) || 'EMPTY'}</div>
+        </div>
+
         <a href="/" class="inline-block bg-slate-800 text-white px-8 py-3 rounded-full font-black uppercase text-[10px] tracking-widest hover:bg-slate-700">Return</a>
       </div>
     </body></html>`, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
