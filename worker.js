@@ -1,9 +1,9 @@
 /**
- * SmartNewsReader v11.1
- * - BASE: v10.9 (Density Parser + Git Baseline)
- * - UPDATE: Added NYT Chinese RSS.
- * - UPDATE: parseRSS regex optimized for NYT description <img> tags (single quotes).
- * - PRESERVED: Identity, Navigation, State Logic, and Debug Page raw output.
+ * SmartNewsReader v11.2
+ * - BASE: v11.1
+ * - UPDATE: Multi-source Epoch Times feeds.
+ * - UPDATE: Deduplication of feed items by URL after timestamp sorting.
+ * - PRESERVED: Density Parser, 1s Read State, Debug Page Raw Output.
  */
 
 export default {
@@ -65,7 +65,11 @@ export default {
       { name: "法广", url: "https://www.rfi.fr/cn/rss", color: "text-red-600", domain: "www.rfi.fr" },
       { name: "BBC", url: "https://feeds.bbci.co.uk/zhongwen/trad/rss.xml", color: "text-orange-700", domain: "feeds.bbci.co.uk" },
       { name: "亚广", url: "https://www.rfa.org/arc/outboundfeeds/mandarin/rss/", color: "text-orange-600", domain: "www.rfa.org" },
-      { name: "大纪元", url: "https://feed.epochtimes.com/gb/feed", color: "text-blue-600", domain: "feed.epochtimes.com" },
+      { name: "大纪元", url: "https://feed.epochtimes.com/gb/nsc418.htm/feed", color: "text-blue-600", domain: "feed.epochtimes.com" },
+      { name: "大纪元", url: "https://www.epochtimes.com/gb/nsc412.htm/feed", color: "text-blue-600", domain: "feed.epochtimes.com" },
+      { name: "大纪元", url: "https://www.epochtimes.com/gb/nsc413.htm/feed", color: "text-blue-600", domain: "feed.epochtimes.com" },
+      { name: "大纪元", url: "https://www.epochtimes.com/gb/nsc419.htm/feed", color: "text-blue-600", domain: "feed.epochtimes.com" },
+      { name: "大纪元", url: "https://www.epochtimes.com/gb/nsc420.htm/feed", color: "text-blue-600", domain: "feed.epochtimes.com" },
       { name: "美国之音", url: "https://www.voachinese.com/api/zm_yql-vomx-tpeybti", color: "text-sky-800", domain: "www.voachinese.com" }
     ];
 
@@ -81,7 +85,15 @@ export default {
       })
     );
 
-    const allNews = feedResults.flat().sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+    // Flatten, Sort by Time, and then Dedupe by Link
+    const rawFlattened = feedResults.flat().sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+    const seenUrls = new Set();
+    const allNews = rawFlattened.filter(item => {
+      if (seenUrls.has(item.link)) return false;
+      seenUrls.add(item.link);
+      return true;
+    });
+
     return new Response(this.renderHome(allNews), { headers: { "Content-Type": "text/html; charset=UTF-8" } });
   },
 
@@ -90,7 +102,7 @@ export default {
     const newsItems = [];
 
     for (const item of items) {
-      if (source.domain === "feed.epochtimes.com") {
+      if (source.domain === "feed.epochtimes.com" || source.domain === "www.epochtimes.com") {
         const isShenYun = /<category>(?:<!\[CDATA\[)?神韵(?:\]\]>)?<\/category>/i.test(item);
         if (isShenYun) continue;
       }
@@ -99,7 +111,6 @@ export default {
       let link = (item.match(/<link><!\[CDATA\[([\s\S]*?)\]\]><\/link>/) || item.match(/<link>([\s\S]*?)<\/link>/))?.[1] || "";
       const pubDate = (item.match(/<pubDate>([\s\S]*?)<\/pubDate>/))?.[1] || "";
       
-      // regex update: captures NYT's single-quoted src in description + other sources
       const mediaMatch = item.match(/<(?:media:thumbnail|media:content|enclosure)[^>]*url=["']([\s\S]*?)["']/) || 
                          item.match(/<img[^>]*src=["']([\s\S]*?)["']/);
       
