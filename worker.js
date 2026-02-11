@@ -1,9 +1,8 @@
 /**
- * SmartNewsReader v10.8
- * - BASE: v10.7 Git Source
- * - NEW: /debug/{url} route for inspection.
- * - REQUIREMENT: Output raw prompt, output full code, preserve v10.5 logic.
- * - UPDATE: AI Summary indicator "AI 总结".
+ * SmartNewsReader v10.9
+ * - BASE: v10.8 Git Source
+ * - UPDATE: Tag-agnostic CJK Density Parsing (min 15 chars, >30% density)
+ * - PRESERVED: Original UI, v10.5 headers, and Debug Page formatting.
  */
 
 export default {
@@ -183,6 +182,8 @@ export default {
 
   async _getArticleData(targetUrl, request, apiKey, env, ctx) {
     let pageTitle = "", socialImg = "", firstBodyImg = "", paragraphs = [];
+    let textBuffer = ""; // Buffer to aggregate text chunks from HTMLRewriter
+
     const res = await fetch(targetUrl, { headers: this.getStealthHeaders(request, new URL(targetUrl).hostname) });
     if (!res.ok) throw new Error(`Fetch Exception: HTTP ${res.status}`);
 
@@ -197,12 +198,25 @@ export default {
         const src = el.getAttribute("src") || el.getAttribute("data-src");
         if (!firstBodyImg && src && !src.startsWith('data:')) firstBodyImg = src;
       }})
-      .on("p", { text(t) { 
-        const txt = t.text.trim();
-        if (txt.length > 15) paragraphs.push(txt); 
-      }})
+      .on("p, div, span, article", { // Expanded selector to catch NYT-style divs
+        text(t) { 
+          textBuffer += t.text;
+          if (t.lastInTextNode) {
+            const txt = textBuffer.trim();
+            textBuffer = ""; // Reset for next node
+
+            if (txt.length >= 15) {
+              // CJK Character Density Check (>30%)
+              const chineseChars = txt.match(/[\u4e00-\u9fa5]/g) || [];
+              const density = chineseChars.length / txt.length;
+              if (density > 0.3) paragraphs.push(txt);
+            }
+          }
+        }
+      })
       .transform(res).arrayBuffer();
 
+    paragraphs = [...new Set(paragraphs)];
     const cleanTitle = pageTitle.trim() || "News Article";
     const b64 = btoa(targetUrl);
     const kvKey = b64.substring(Math.max(0, b64.length - 64));
@@ -265,7 +279,6 @@ export default {
     } catch(e) { return new Response(null, { status: 404 }); }
   },
 
-  // v10.5 Git Source logic
   getStealthHeaders(req, host) {
     const h = new Headers();
     const userUA = req.headers.get("User-Agent") || "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15";
@@ -278,7 +291,6 @@ export default {
     return h;
   },
 
-  // v10.5 Git Source logic
   timeAgo(ts) {
     const diff = Math.floor((Date.now() - ts) / 1000);
     if (diff < 60) return "刚刚";
@@ -391,7 +403,6 @@ export default {
     <script>const articleId = btoa(window.location.pathname); setTimeout(() => localStorage.setItem('read_' + articleId, Date.now()), 1000);</script></body></html>`;
   },
 
-  // Requirements: Raw Prompt and Headers included in output
   renderDebugPage(err, prompt, response, headersJson, rawHtml) {
     const tw = "https://cdn.tailwindcss.com";
     const escape = (str) => str?.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
