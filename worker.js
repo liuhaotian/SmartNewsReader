@@ -1,9 +1,8 @@
 /**
- * SmartNewsReader v11.2
- * - BASE: v11.1
- * - UPDATE: Multi-source Epoch Times feeds.
- * - UPDATE: Deduplication of feed items by URL after timestamp sorting.
- * - PRESERVED: Density Parser, 1s Read State, Debug Page Raw Output.
+ * SmartNewsReader v11.3
+ * - BASE: v11.2
+ * - UPDATE: Expanded RFI regional feeds.
+ * - PRESERVED: Deduplication, Density Parser, 1s Read State, 14d KV TTL.
  */
 
 export default {
@@ -63,6 +62,10 @@ export default {
     const sources = [
       { name: "纽约时报", url: "https://cn.nytimes.com/rss/", color: "text-slate-900", domain: "cn.nytimes.com" },
       { name: "法广", url: "https://www.rfi.fr/cn/rss", color: "text-red-600", domain: "www.rfi.fr" },
+      { name: "法广", url: "https://www.rfi.fr/cn/%E7%BE%8E%E6%B4%B2/rss", color: "text-red-600", domain: "www.rfi.fr" },
+      { name: "法广", url: "https://www.rfi.fr/cn/%E4%B8%AD%E5%9B%BD/rss", color: "text-red-600", domain: "www.rfi.fr" },
+      { name: "法广", url: "https://www.rfi.fr/cn/%E6%B8%AF%E6%BE%B3%E5%8F%B0/rss", color: "text-red-600", domain: "www.rfi.fr" },
+      { name: "法广", url: "https://www.rfi.fr/cn/%E4%BA%9A%E6%B4%B2/rss", color: "text-red-600", domain: "www.rfi.fr" },
       { name: "BBC", url: "https://feeds.bbci.co.uk/zhongwen/trad/rss.xml", color: "text-orange-700", domain: "feeds.bbci.co.uk" },
       { name: "亚广", url: "https://www.rfa.org/arc/outboundfeeds/mandarin/rss/", color: "text-orange-600", domain: "www.rfa.org" },
       { name: "大纪元", url: "https://feed.epochtimes.com/gb/nsc418.htm/feed", color: "text-blue-600", domain: "feed.epochtimes.com" },
@@ -85,7 +88,7 @@ export default {
       })
     );
 
-    // Flatten, Sort by Time, and then Dedupe by Link
+    // Flatten, Sort by Time, then Dedupe by Link
     const rawFlattened = feedResults.flat().sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
     const seenUrls = new Set();
     const allNews = rawFlattened.filter(item => {
@@ -102,7 +105,7 @@ export default {
     const newsItems = [];
 
     for (const item of items) {
-      if (source.domain === "feed.epochtimes.com" || source.domain === "www.epochtimes.com") {
+      if (source.domain.includes("epochtimes.com")) {
         const isShenYun = /<category>(?:<!\[CDATA\[)?神韵(?:\]\]>)?<\/category>/i.test(item);
         if (isShenYun) continue;
       }
