@@ -1,8 +1,9 @@
 /**
- * SmartNewsReader v10.9
- * - BASE: v10.8 Git Source
- * - UPDATE: Tag-agnostic CJK Density Parsing (min 15 chars, >30% density)
- * - PRESERVED: Original UI, v10.5 headers, and Debug Page formatting.
+ * SmartNewsReader v11.1
+ * - BASE: v10.9 (Density Parser + Git Baseline)
+ * - UPDATE: Added NYT Chinese RSS.
+ * - UPDATE: parseRSS regex optimized for NYT description <img> tags (single quotes).
+ * - PRESERVED: Identity, Navigation, State Logic, and Debug Page raw output.
  */
 
 export default {
@@ -17,16 +18,11 @@ export default {
       return new Response("Secret Error: GEMINI_API_KEY binding required.", { status: 500 });
     }
 
-    // New Debug Route (Target URL follows /debug/)
     if (path.startsWith('/debug/')) return await this.handleDebug(path, request, apiKey, env, ctx);
-
     if (path.startsWith('/image/')) return await this.handleImageProxy(url, request);
     if (path === "/" || path === "") return await this.handleUnifiedFeed(request);
-    
     if (path.startsWith('/summary/')) return await this.handleSummary(path, request, apiKey, env, ctx);
-    if (path.startsWith('/article/')) {
-      return await this.handleArticle(path, request, apiKey, env, ctx);
-    }
+    if (path.startsWith('/article/')) return await this.handleArticle(path, request, apiKey, env, ctx);
 
     return new Response("Not Found", { status: 404 });
   },
@@ -47,7 +43,6 @@ export default {
       for (const [key, value] of res.headers.entries()) {
         respHeaders[key] = value;
       }
-      // Attempt extraction to see what the AI sees
       data = await this._getArticleData(targetUrl, request, apiKey, env, ctx);
     } catch (e) {
       error = e;
@@ -66,6 +61,7 @@ export default {
 
   async handleUnifiedFeed(request) {
     const sources = [
+      { name: "纽约时报", url: "https://cn.nytimes.com/rss/", color: "text-slate-900", domain: "cn.nytimes.com" },
       { name: "法广", url: "https://www.rfi.fr/cn/rss", color: "text-red-600", domain: "www.rfi.fr" },
       { name: "BBC", url: "https://feeds.bbci.co.uk/zhongwen/trad/rss.xml", color: "text-orange-700", domain: "feeds.bbci.co.uk" },
       { name: "亚广", url: "https://www.rfa.org/arc/outboundfeeds/mandarin/rss/", color: "text-orange-600", domain: "www.rfa.org" },
@@ -100,13 +96,12 @@ export default {
       }
 
       const title = (item.match(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>/) || item.match(/<title>([\s\S]*?)<\/title>/))?.[1] || "No Title";
-      let link = (item.match(/<link>([\s\S]*?)<\/link>/))?.[1] || "";
+      let link = (item.match(/<link><!\[CDATA\[([\s\S]*?)\]\]><\/link>/) || item.match(/<link>([\s\S]*?)<\/link>/))?.[1] || "";
       const pubDate = (item.match(/<pubDate>([\s\S]*?)<\/pubDate>/))?.[1] || "";
       
-      const mediaMatch = item.match(/<media:thumbnail[^>]*url="([\s\S]*?)"/) || 
-                         item.match(/<media:content[^>]*url="([\s\S]*?)"/) || 
-                         item.match(/<enclosure[^>]*url="([\s\S]*?)"/) || 
-                         item.match(/<img[^>]*src="([\s\S]*?)"/);
+      // regex update: captures NYT's single-quoted src in description + other sources
+      const mediaMatch = item.match(/<(?:media:thumbnail|media:content|enclosure)[^>]*url=["']([\s\S]*?)["']/) || 
+                         item.match(/<img[^>]*src=["']([\s\S]*?)["']/);
       
       let articlePath = "#";
       if (link) {
@@ -119,7 +114,7 @@ export default {
         } catch(e) {}
       }
       newsItems.push({ 
-        title, 
+        title: title.trim(), 
         link: articlePath, 
         image: mediaMatch ? `/image/${mediaMatch[1].replace(/^https?:\/\//, '')}` : "", 
         source: source.name, 
@@ -182,7 +177,7 @@ export default {
 
   async _getArticleData(targetUrl, request, apiKey, env, ctx) {
     let pageTitle = "", socialImg = "", firstBodyImg = "", paragraphs = [];
-    let textBuffer = ""; // Buffer to aggregate text chunks from HTMLRewriter
+    let textBuffer = "";
 
     const res = await fetch(targetUrl, { headers: this.getStealthHeaders(request, new URL(targetUrl).hostname) });
     if (!res.ok) throw new Error(`Fetch Exception: HTTP ${res.status}`);
@@ -198,17 +193,15 @@ export default {
         const src = el.getAttribute("src") || el.getAttribute("data-src");
         if (!firstBodyImg && src && !src.startsWith('data:')) firstBodyImg = src;
       }})
-      .on("p, div, span, article", { // Expanded selector to catch NYT-style divs
+      .on("p, div, span, article", { 
         text(t) { 
           textBuffer += t.text;
           if (t.lastInTextNode) {
             const txt = textBuffer.trim();
-            textBuffer = ""; // Reset for next node
-
+            textBuffer = "";
             if (txt.length >= 15) {
-              // CJK Character Density Check (>30%)
               const chineseChars = txt.match(/[\u4e00-\u9fa5]/g) || [];
-              const density = chineseChars.length / txt.length;
+              const density = chineseChars.length / (txt.length || 1);
               if (density > 0.3) paragraphs.push(txt);
             }
           }
@@ -300,139 +293,16 @@ export default {
   },
 
   renderHome(news) {
-    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-    <title>智能新闻</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-      .is-read .card-header { opacity: 0.3; filter: grayscale(1); }
-      .accordion-content { max-height: 0; overflow: hidden; transition: max-height 0.3s ease-out; }
-      .expanded .accordion-content { max-height: 600px; }
-      .expanded .card-chevron { transform: rotate(180deg); }
-      header { padding-top: env(safe-area-inset-top, 0px); }
-    </style></head>
-    <body class="bg-slate-50 min-h-screen font-sans">
-    <header class="sticky top-0 z-50 bg-white/95 backdrop-blur-md border-b shadow-sm">
-      <div class="flex justify-between items-center p-4">
-        <h1 class="font-black text-xl text-slate-900 tracking-tighter uppercase">SmartNews</h1>
-        <button onclick="if(confirm('Clear history?')){localStorage.clear();location.reload();}" class="text-[9px] font-bold text-slate-400 border px-2 py-1 rounded hover:bg-slate-50 uppercase">Reset</button>
-      </div>
-    </header>
-    <main id="feed" class="max-w-md mx-auto divide-y bg-white">${news.map(i => `
-      <div class="news-card border-b last:border-0" data-id="${btoa(i.link)}" data-url="${i.link}">
-        <div class="flex gap-4 p-5 cursor-pointer hover:bg-slate-50 transition-all card-header">
-          <div class="w-24 h-16 shrink-0 rounded overflow-hidden bg-slate-100">${i.image ? `<img src="${i.image}" class="w-full h-full object-cover">` : ''}</div>
-          <div class="flex flex-col justify-between py-0.5 flex-grow">
-            <h2 class="text-xs font-bold leading-snug text-slate-800 line-clamp-2">${i.title}</h2>
-            <div class="flex items-center justify-between mt-2">
-              <div class="flex items-center gap-2">
-                <span class="text-[8px] font-black uppercase px-1.5 py-0.5 border rounded ${i.color}">${i.source}</span>
-                <span class="text-[8px] text-slate-400 font-medium">${this.timeAgo(i.timestamp)}</span>
-              </div>
-              <svg class="w-3 h-3 text-slate-300 card-chevron transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M19 9l-7 7-7-7"></path></svg>
-            </div>
-          </div>
-        </div>
-        <div class="accordion-content">
-          <a href="${i.link}" class="block bg-red-50 border-l-4 border-red-600 p-5 pt-4 pb-4 relative mb-4 mx-4 rounded-r-xl shadow-sm active:bg-red-100/50 transition-colors">
-            <ul class="summary-target space-y-2 list-disc list-inside text-[13px] leading-relaxed text-red-900 font-medium pb-2">
-              <div class="flex justify-center p-2"><div class="animate-pulse flex space-x-1"><div class="h-1 w-1 bg-red-300 rounded-full"></div><div class="h-1 w-1 bg-red-300 rounded-full"></div><div class="h-1 w-1 bg-red-300 rounded-full"></div></div></div>
-            </ul>
-            <div class="absolute bottom-1.5 right-2 opacity-30"><span class="text-[7px] font-black uppercase tracking-tighter text-red-900 italic">AI 总结</span></div>
-          </a>
-        </div>
-      </div>`).join('')}</main>
-    <script>
-      const syncStatus = () => document.querySelectorAll('.news-card').forEach(c => localStorage.getItem('read_'+c.dataset.id) && c.classList.add('is-read'));
-      syncStatus();
-      window.addEventListener('pageshow', (e) => e.persisted && syncStatus());
-
-      document.querySelectorAll('.card-header').forEach(header => {
-        let readTimer;
-        const startTimer = (card) => {
-          clearTimeout(readTimer);
-          readTimer = setTimeout(() => {
-            if (card.classList.contains('expanded')) {
-              localStorage.setItem('read_' + card.dataset.id, Date.now());
-              card.classList.add('is-read');
-            }
-          }, 1000);
-        };
-
-        header.addEventListener('click', async () => {
-          const card = header.closest('.news-card');
-          const isExpanded = card.classList.toggle('expanded');
-          const target = card.querySelector('.summary-target');
-          const url = card.dataset.url;
-          
-          if (isExpanded) {
-            if (card.dataset.loaded) {
-              startTimer(card);
-            } else {
-              try {
-                const res = await fetch('/summary/' + url.replace('/article/', ''));
-                if (!res.ok) throw new Error();
-                const points = await res.json();
-                target.innerHTML = points.map(p => \`<li>\${p}</li>\`).join('');
-                card.dataset.loaded = "true";
-                startTimer(card);
-              } catch(err) {
-                target.innerHTML = \`<li class="list-none text-center p-2"><p class="text-[10px] text-slate-500 mb-1 font-bold uppercase">Summary failed</p><span class="text-xs text-blue-600 underline">Read full article</span></li>\`;
-              }
-            }
-          } else {
-            clearTimeout(readTimer);
-          }
-        });
-      });
-    </script></body></html>`;
+    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"><title>智能新闻</title><script src="https://cdn.tailwindcss.com"></script><style>.is-read .card-header { opacity: 0.3; filter: grayscale(1); }.accordion-content { max-height: 0; overflow: hidden; transition: max-height 0.3s ease-out; }.expanded .accordion-content { max-height: 600px; }.expanded .card-chevron { transform: rotate(180deg); }header { padding-top: env(safe-area-inset-top, 0px); }</style></head><body class="bg-slate-50 min-h-screen font-sans"><header class="sticky top-0 z-50 bg-white/95 backdrop-blur-md border-b shadow-sm"><div class="flex justify-between items-center p-4"><h1 class="font-black text-xl text-slate-900 tracking-tighter uppercase">SmartNews</h1><button onclick="if(confirm('Clear history?')){localStorage.clear();location.reload();}" class="text-[9px] font-bold text-slate-400 border px-2 py-1 rounded hover:bg-slate-50 uppercase">Reset</button></div></header><main id="feed" class="max-w-md mx-auto divide-y bg-white">${news.map(i => `<div class="news-card border-b last:border-0" data-id="${btoa(i.link)}" data-url="${i.link}"><div class="flex gap-4 p-5 cursor-pointer hover:bg-slate-50 transition-all card-header"><div class="w-24 h-16 shrink-0 rounded overflow-hidden bg-slate-100">${i.image ? `<img src="${i.image}" class="w-full h-full object-cover">` : ''}</div><div class="flex flex-col justify-between py-0.5 flex-grow"><h2 class="text-xs font-bold leading-snug text-slate-800 line-clamp-2">${i.title}</h2><div class="flex items-center justify-between mt-2"><div class="flex items-center gap-2"><span class="text-[8px] font-black uppercase px-1.5 py-0.5 border rounded ${i.color}">${i.source}</span><span class="text-[8px] text-slate-400 font-medium">${this.timeAgo(i.timestamp)}</span></div><svg class="w-3 h-3 text-slate-300 card-chevron transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M19 9l-7 7-7-7"></path></svg></div></div></div><div class="accordion-content"><a href="${i.link}" class="block bg-red-50 border-l-4 border-red-600 p-5 pt-4 pb-4 relative mb-4 mx-4 rounded-r-xl shadow-sm active:bg-red-100/50 transition-colors"><ul class="summary-target space-y-2 list-disc list-inside text-[13px] leading-relaxed text-red-900 font-medium pb-2"><div class="flex justify-center p-2"><div class="animate-pulse flex space-x-1"><div class="h-1 w-1 bg-red-300 rounded-full"></div><div class="h-1 w-1 bg-red-300 rounded-full"></div><div class="h-1 w-1 bg-red-300 rounded-full"></div></div></div></ul><div class="absolute bottom-1.5 right-2 opacity-30"><span class="text-[7px] font-black uppercase tracking-tighter text-red-900 italic">AI 总结</span></div></a></div></div>`).join('')}</main><script>const syncStatus = () => document.querySelectorAll('.news-card').forEach(c => localStorage.getItem('read_'+c.dataset.id) && c.classList.add('is-read')); syncStatus(); window.addEventListener('pageshow', (e) => e.persisted && syncStatus()); document.querySelectorAll('.card-header').forEach(header => { let readTimer; const startTimer = (card) => { clearTimeout(readTimer); readTimer = setTimeout(() => { if (card.classList.contains('expanded')) { localStorage.setItem('read_' + card.dataset.id, Date.now()); card.classList.add('is-read'); } }, 1000); }; header.addEventListener('click', async () => { const card = header.closest('.news-card'); const isExpanded = card.classList.toggle('expanded'); const target = card.querySelector('.summary-target'); const url = card.dataset.url; if (isExpanded) { if (card.dataset.loaded) { startTimer(card); } else { try { const res = await fetch('/summary/' + url.replace('/article/', '')); if (!res.ok) throw new Error(); const points = await res.json(); target.innerHTML = points.map(p => \`<li>\${p}</li>\`).join(''); card.dataset.loaded = "true"; startTimer(card); } catch(err) { target.innerHTML = \`<li class="list-none text-center p-2"><p class="text-[10px] text-slate-500 mb-1 font-bold uppercase">Summary failed</p><span class="text-xs text-blue-600 underline">Read full article</span></li>\`; } } } else { clearTimeout(readTimer); } }); });</script></body></html>`;
   },
 
   renderArticle(data) {
-    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><script src="https://cdn.tailwindcss.com"></script><style>body { padding-top: env(safe-area-inset-top, 0px); }</style></head>
-    <body class="bg-white"><div class="max-w-xl mx-auto">${data.image_url ? `<img src="${data.image_url}" class="w-full aspect-video object-cover">` : ''}
-    <div class="p-6"><h1 class="text-2xl font-black mb-6 leading-tight text-slate-900">${data.title}</h1>
-    <div class="bg-red-50 border-l-4 border-red-600 p-5 mb-8 rounded-r-xl shadow-sm relative">
-      <ul class="space-y-2 list-disc list-inside text-sm font-medium text-red-900 pb-2">${data.summary_points.map(p => `<li>${p}</li>`).join('')}</ul>
-      <div class="absolute bottom-1.5 right-2 opacity-30"><span class="text-[7px] font-black uppercase tracking-tighter text-red-900 italic">AI 总结</span></div>
-    </div>
-    <div class="space-y-6 text-slate-800 leading-relaxed text-lg">${data.paragraphs.map(p => `<p>${p}</p>`).join('')}</div></div>
-    <footer class="p-10 border-t mt-10 text-center"><a href="/" class="bg-black text-white px-10 py-4 rounded-full text-[10px] font-black tracking-widest uppercase shadow-lg hover:bg-slate-800 transition-colors">← Back to Feed</a></footer></div>
-    <script>const articleId = btoa(window.location.pathname); setTimeout(() => localStorage.setItem('read_' + articleId, Date.now()), 1000);</script></body></html>`;
+    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><script src="https://cdn.tailwindcss.com"></script><style>body { padding-top: env(safe-area-inset-top, 0px); }</style></head><body class="bg-white"><div class="max-w-xl mx-auto">${data.image_url ? `<img src="${data.image_url}" class="w-full aspect-video object-cover">` : ''}<div class="p-6"><h1 class="text-2xl font-black mb-6 leading-tight text-slate-900">${data.title}</h1><div class="bg-red-50 border-l-4 border-red-600 p-5 mb-8 rounded-r-xl shadow-sm relative"><ul class="space-y-2 list-disc list-inside text-sm font-medium text-red-900 pb-2">${data.summary_points.map(p => `<li>${p}</li>`).join('')}</ul><div class="absolute bottom-1.5 right-2 opacity-30"><span class="text-[7px] font-black uppercase tracking-tighter text-red-900 italic">AI 总结</span></div></div><div class="space-y-6 text-slate-800 leading-relaxed text-lg">${data.paragraphs.map(p => `<p>${p}</p>`).join('')}</div></div><footer class="p-10 border-t mt-10 text-center"><a href="/" class="bg-black text-white px-10 py-4 rounded-full text-[10px] font-black tracking-widest uppercase shadow-lg hover:bg-slate-800 transition-colors">← Back to Feed</a></footer></div><script>const articleId = btoa(window.location.pathname); setTimeout(() => localStorage.setItem('read_' + articleId, Date.now()), 1000);</script></body></html>`;
   },
 
   renderDebugPage(err, prompt, response, headersJson, rawHtml) {
     const tw = "https://cdn.tailwindcss.com";
     const escape = (str) => str?.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return new Response(`<!DOCTYPE html><html><head><meta charset="UTF-8"><script src="${tw}"></script></head>
-    <body class="bg-slate-950 text-slate-300 p-6 font-mono text-[10px] whitespace-pre-wrap break-all">
-      <div class="max-w-4xl mx-auto space-y-6">
-        <h1 class="text-red-500 text-lg font-black uppercase italic tracking-tighter">DIAGNOSTIC // ${err.message}</h1>
-        
-        <div class="space-y-2">
-          <h2 class="text-blue-500 font-bold uppercase tracking-widest">[Header Exchange]</h2>
-          <div class="bg-slate-900 p-4 rounded border border-slate-800 select-all">${escape(headersJson)}</div>
-        </div>
-
-        <div class="space-y-2">
-          <h2 class="text-orange-500 font-bold uppercase tracking-widest">[Original Prompt]</h2>
-          <div class="bg-slate-900 p-4 rounded border border-slate-800 select-all">${escape(prompt) || 'N/A'}</div>
-        </div>
-        
-        <div class="space-y-2">
-          <h2 class="text-green-500 font-bold uppercase tracking-widest">[Raw AI Response]</h2>
-          <div class="bg-slate-900 p-4 rounded border border-slate-800 select-all">${escape(response) || 'N/A'}</div>
-        </div>
-
-        <div class="space-y-2">
-          <h2 class="text-slate-500 font-bold uppercase tracking-widest">[Raw HTML Body]</h2>
-          <div class="bg-slate-900 p-4 rounded border border-slate-800 select-all h-96 overflow-y-auto">${escape(rawHtml) || 'EMPTY'}</div>
-        </div>
-
-        <a href="/" class="inline-block bg-slate-800 text-white px-8 py-3 rounded-full font-black uppercase text-[10px] tracking-widest hover:bg-slate-700">Return</a>
-      </div>
-    </body></html>`, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
+    return new Response(`<!DOCTYPE html><html><head><meta charset="UTF-8"><script src="${tw}"></script></head><body class="bg-slate-950 text-slate-300 p-6 font-mono text-[10px] whitespace-pre-wrap break-all"><div class="max-w-4xl mx-auto space-y-6"><h1 class="text-red-500 text-lg font-black uppercase italic tracking-tighter">DIAGNOSTIC // ${err.message}</h1><div class="space-y-2"><h2 class="text-blue-500 font-bold uppercase tracking-widest">[Header Exchange]</h2><div class="bg-slate-900 p-4 rounded border border-slate-800 select-all">${escape(headersJson)}</div></div><div class="space-y-2"><h2 class="text-orange-500 font-bold uppercase tracking-widest">[Original Prompt]</h2><div class="bg-slate-900 p-4 rounded border border-slate-800 select-all">${escape(prompt) || 'N/A'}</div></div><div class="space-y-2"><h2 class="text-green-500 font-bold uppercase tracking-widest">[Raw AI Response]</h2><div class="bg-slate-900 p-4 rounded border border-slate-800 select-all">${escape(response) || 'N/A'}</div></div><div class="space-y-2"><h2 class="text-slate-500 font-bold uppercase tracking-widest">[Raw HTML Body]</h2><div class="bg-slate-900 p-4 rounded border border-slate-800 select-all h-96 overflow-y-auto">${escape(rawHtml) || 'EMPTY'}</div></div><a href="/" class="inline-block bg-slate-800 text-white px-8 py-3 rounded-full font-black uppercase text-[10px] tracking-widest hover:bg-slate-700">Return</a></div></body></html>`, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
   }
 };
